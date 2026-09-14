@@ -83,11 +83,11 @@ jobs:
           # Windows executables restored from the cache may not retain a Unix
           # executable bit when accessed through Git Bash.
           chmod +x ./gn/out/gn.exe \
-            ./third_party/llvm-build/Release+Asserts/bin/clang.exe
+            ./third_party/llvm-build/Release+Asserts/bin/clang-cl.exe
           test -f ./gn/out/gn.exe
-          test -f ./third_party/llvm-build/Release+Asserts/bin/clang.exe
+          test -f ./third_party/llvm-build/Release+Asserts/bin/clang-cl.exe
           ./gn/out/gn.exe --version
-          ./third_party/llvm-build/Release+Asserts/bin/clang.exe --version
+          ./third_party/llvm-build/Release+Asserts/bin/clang-cl.exe --version
           test -f "$HOME/.cargo/bin/sccache.exe"
 
       - name: Build modified Cronet Windows x64 shared library
