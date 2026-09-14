@@ -136,9 +136,9 @@ jobs:
           EXTRA_FLAGS='target_cpu="x86"' bash ./get-clang.sh
           EXTRA_FLAGS='target_cpu="arm64"' bash ./get-clang.sh
           chmod +x ./gn/out/gn.exe \
-            ./third_party/llvm-build/Release+Asserts/bin/clang.exe
+            ./third_party/llvm-build/Release+Asserts/bin/clang-cl.exe
           ./gn/out/gn.exe --version
-          ./third_party/llvm-build/Release+Asserts/bin/clang.exe --version
+          ./third_party/llvm-build/Release+Asserts/bin/clang-cl.exe --version
 
   linux:
     needs: cache-toolchains-posix
@@ -727,11 +727,11 @@ jobs:
           chmod +x ./get-clang.sh ./get-sysroot.sh ./build.sh
           bash ./get-clang.sh
           chmod +x ./gn/out/gn.exe \
-            ./third_party/llvm-build/Release+Asserts/bin/clang.exe
+            ./third_party/llvm-build/Release+Asserts/bin/clang-cl.exe
           test -f ./gn/out/gn.exe
-          test -f ./third_party/llvm-build/Release+Asserts/bin/clang.exe
+          test -f ./third_party/llvm-build/Release+Asserts/bin/clang-cl.exe
           ./gn/out/gn.exe --version
-          ./third_party/llvm-build/Release+Asserts/bin/clang.exe --version
+          ./third_party/llvm-build/Release+Asserts/bin/clang-cl.exe --version
           test -f "$HOME/.cargo/bin/sccache.exe"
 
       - name: Build modified Cronet Windows shared library
