@@ -1,0 +1,171 @@
+name: Build Cronet from naiveproxy Linux x64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-naiveproxy-cronet-linux-x64
+  cancel-in-progress: true
+
+env:
+  NAIVE_ROOT: ${{ github.workspace }}
+  CHROMIUM_SRC: ${{ github.workspace }}/src
+  OUT_DIR: ${{ github.workspace }}/src/out/Release
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+
+jobs:
+  linux-x64:
+    name: Build Cronet from naiveproxy Linux x64
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
+        working-directory: src
+
+    steps:
+      - name: Checkout naiveproxy with bundled Chromium source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Show runner information
+        run: |
+          set -euxo pipefail
+          uname -a
+          arch
+          nproc
+          free -h
+          df -h /
+          python3 --version
+          git --version
+
+      - name: Install basic host packages
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils \
+            build-essential \
+            ca-certificates \
+            ccache \
+            curl \
+            file \
+            git \
+            git-lfs \
+            lsb-release \
+            ninja-build \
+            pkg-config \
+            python3 \
+            rsync \
+            unzip \
+            xz-utils \
+            zip
+
+      - name: Verify bundled Chromium and Cronet targets
+        run: |
+          set -euxo pipefail
+          test -f "$NAIVE_ROOT/CHROMIUM_VERSION"
+          test -f "$CHROMIUM_SRC/DEPS"
+          test -f "$CHROMIUM_SRC/components/cronet/BUILD.gn"
+          grep -Fq 'static_library("cronet_static")' \
+            "$CHROMIUM_SRC/components/cronet/BUILD.gn"
+          grep -Fq 'shared_library("cronet")' \
+            "$CHROMIUM_SRC/components/cronet/BUILD.gn"
+
+          echo "naiveproxy revision:"
+          git -C "$NAIVE_ROOT" rev-parse HEAD \
+            | tee "$RUNNER_TEMP/naiveproxy_revision.txt"
+          echo "Chromium version:"
+          tr -d '\n' < "$NAIVE_ROOT/CHROMIUM_VERSION" \
+            | tee "$RUNNER_TEMP/chromium_version.txt"
+          printf '\n'
+
+      - name: Cache repository toolchain and compiler cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            src/third_party/llvm-build/Release+Asserts/
+            src/gn/
+            src/chrome/build/pgo_profiles/
+            .ccache/
+          key: cronet-linux-x64-${{ hashFiles('CHROMIUM_VERSION', 'src/DEPS') }}-v1
+
+      - name: Prepare repository toolchain
+        run: |
+          set -euxo pipefail
+          bash ./get-clang.sh
+          chmod +x "$CHROMIUM_SRC/gn/out/gn"
+          test -x "$CHROMIUM_SRC/gn/out/gn"
+          test -x "$CHROMIUM_SRC/third_party/llvm-build/Release+Asserts/bin/clang"
+
+      - name: Build Cronet shared library
+        run: |
+          set -euxo pipefail
+          ccache -z
+          bash ./build.sh
+          ninja -C "$OUT_DIR" cronet
+          ccache -s
+
+      - name: Locate and validate Cronet Linux x64 library
+        run: |
+          set -euxo pipefail
+          artifact_dir="$RUNNER_TEMP/cronet-artifact"
+          mkdir -p "$artifact_dir"
+
+          found="$(find "$OUT_DIR" -type f \( \
+            -name 'libcronet.so' -o \
+            -name 'libcronet.*.so' -o \
+            -name 'cronet.*.so' \
+          \) -print -quit || true)"
+
+          if [[ -z "$found" ]]; then
+            echo 'ERROR: No Cronet shared library was produced.'
+            echo 'All shared libraries under the output directory:'
+            find "$OUT_DIR" -type f -name '*.so' -print | head -200 || true
+            exit 1
+          fi
+
+          echo "Found: $found"
+          cp -L "$found" "$artifact_dir/libcronet.so"
+          cp -L "$OUT_DIR/args.gn" "$artifact_dir/args.gn"
+
+          file "$artifact_dir/libcronet.so"
+          readelf -h "$artifact_dir/libcronet.so"
+          file "$artifact_dir/libcronet.so" \
+            | grep -Eq 'ELF 64-bit.*x86-64'
+
+          sha256sum "$artifact_dir/libcronet.so" \
+            | tee "$artifact_dir/SHA256SUMS.txt"
+
+          {
+            echo "naiveproxy revision: $(git -C "$NAIVE_ROOT" rev-parse HEAD)"
+            echo "Chromium version: $(tr -d '\n' < "$NAIVE_ROOT/CHROMIUM_VERSION")"
+            echo "Runner: ubuntu-22.04"
+            echo "Architecture: x86_64"
+            echo "GN target: //components/cronet:cronet"
+            echo "Source library: $found"
+            echo "Build command: bash ./build.sh && ninja -C out/Release cronet"
+          } > "$artifact_dir/build-info.txt"
+
+      - name: Upload Cronet artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cronet-linux-x64-latest
+          path: ${{ runner.temp }}/cronet-artifact
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload build metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: cronet-linux-x64-build-metadata
+          path: |
+            ${{ runner.temp }}/naiveproxy_revision.txt
+            ${{ runner.temp }}/chromium_version.txt
+          if-no-files-found: warn
+          retention-days: 7
