@@ -356,7 +356,8 @@ jobs:
           - arch: aarch64_cortex-a53-static
             openwrt: "target=sunxi subtarget=cortexa53"
             target_cpu: arm64
-            extra: 'arm_cpu="cortex-a53" build_static=true use_allocator_shim=false use_partition_alloc=false'
+            # Cronet is linked as libcronet.so; static musl libc is not PIC.
+            extra: 'arm_cpu="cortex-a53" build_static=false use_allocator_shim=false use_partition_alloc=false'
             openwrt_release: '24.10.0'
             openwrt_gcc_ver: '13.3.0'
           - arch: aarch64_cortex-a72
@@ -366,7 +367,7 @@ jobs:
           - arch: aarch64_cortex-a72-static
             openwrt: "target=mvebu subtarget=cortexa72"
             target_cpu: arm64
-            extra: 'arm_cpu="cortex-a72" build_static=true use_allocator_shim=false use_partition_alloc=false'
+            extra: 'arm_cpu="cortex-a72" build_static=false use_allocator_shim=false use_partition_alloc=false'
             openwrt_release: '24.10.0'
             openwrt_gcc_ver: '13.3.0'
           - arch: aarch64_cortex-a76
@@ -381,7 +382,7 @@ jobs:
           - arch: aarch64_generic-static
             openwrt: "target=layerscape subtarget=armv8_64b"
             target_cpu: arm64
-            extra: "build_static=true use_allocator_shim=false use_partition_alloc=false"
+            extra: "build_static=false use_allocator_shim=false use_partition_alloc=false"
             openwrt_release: '24.10.0'
             openwrt_gcc_ver: '13.3.0'
           - arch: arm_arm1176jzf-s_vfp
@@ -413,7 +414,7 @@ jobs:
           - arch: arm_cortex-a7_neon-vfpv4-static
             openwrt: "target=sunxi subtarget=cortexa7"
             target_cpu: arm
-            extra: 'arm_version=0 arm_cpu="cortex-a7" arm_fpu="neon-vfpv4" arm_float_abi="hard" arm_use_neon=true build_static=true use_allocator_shim=false use_partition_alloc=false'
+            extra: 'arm_version=0 arm_cpu="cortex-a7" arm_fpu="neon-vfpv4" arm_float_abi="hard" arm_use_neon=true build_static=false use_allocator_shim=false use_partition_alloc=false'
             openwrt_release: '24.10.0'
             openwrt_gcc_ver: '13.3.0'
           - arch: arm_cortex-a7_vfpv4
@@ -433,7 +434,7 @@ jobs:
           - arch: arm_cortex-a9-static
             openwrt: "target=bcm53xx subtarget=generic"
             target_cpu: arm
-            extra: 'arm_version=0 arm_cpu="cortex-a9" arm_float_abi="soft" arm_use_neon=false build_static=true use_allocator_shim=false use_partition_alloc=false'
+            extra: 'arm_version=0 arm_cpu="cortex-a9" arm_float_abi="soft" arm_use_neon=false build_static=false use_allocator_shim=false use_partition_alloc=false'
             openwrt_release: '24.10.0'
             openwrt_gcc_ver: '13.3.0'
           - arch: arm_cortex-a9_neon
@@ -459,7 +460,7 @@ jobs:
           - arch: mipsel_24kc-static
             openwrt: "target=ramips subtarget=rt305x"
             target_cpu: mipsel
-            extra: 'mips_arch_variant="r2" mips_float_abi="soft" build_static=true use_allocator_shim=false use_partition_alloc=false'
+            extra: 'mips_arch_variant="r2" mips_float_abi="soft" build_static=false use_allocator_shim=false use_partition_alloc=false'
             openwrt_release: '24.10.0'
             openwrt_gcc_ver: '13.3.0'
           - arch: mipsel_mips32
@@ -532,6 +533,13 @@ jobs:
           printf 'Chromium version: '
           tr -d '\n' < "$NAIVE_ROOT/CHROMIUM_VERSION"
           printf '\n'
+
+      - name: Verify shared-library linker mode for static-named targets
+        if: contains(matrix.arch, '-static')
+        run: |
+          set -euxo pipefail
+          grep -Fq 'build_static=false' <<< "$EXTRA_FLAGS"
+          ! grep -Fq 'build_static=true' <<< "$EXTRA_FLAGS"
 
       - name: Cache OpenWrt toolchain and host tools
         uses: actions/cache@v4
@@ -763,7 +771,7 @@ jobs:
 
           case "$TARGET_CPU" in
             x64) expected='PE32\+.*x86-64' ;;
-            x86) expected='PE32.*(80386|Intel 80386)' ;;
+            x86) expected='PE32.*(80386|i386|Intel 80386|Intel i386)' ;;
             arm64) expected='PE32\+.*(Aarch64|ARM64)' ;;
             *) echo "Unsupported Windows target CPU: $TARGET_CPU"; exit 1 ;;
           esac
