@@ -1,0 +1,132 @@
+name: Build Patched Cronet Windows x86 Static Library
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-patched-cronet-windows-x86-static
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+    working-directory: src
+
+jobs:
+  windows-x86:
+    name: Build patched Cronet Windows x86 static library
+    runs-on: windows-2022
+    timeout-minutes: 360
+    env:
+      EXTRA_FLAGS: 'target_cpu="x86" enable_websockets=true'
+      TARGET_CPU: x86
+      NAIVE_ROOT: ..
+      CHROMIUM_SRC: .
+      OUT_DIR: out/Release
+
+    steps:
+      - name: Checkout naiveproxy source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Windows Ninja
+        run: |
+          set -euxo pipefail
+          mkdir -p "$HOME/bin"
+          if [[ ! -f "$HOME/bin/ninja.exe" ]]; then
+            curl -fsSL -o "$HOME/bin/ninja-win.zip" \
+              https://github.com/ninja-build/ninja/releases/download/v1.10.2/ninja-win.zip
+            unzip -o "$HOME/bin/ninja-win.zip" -d "$HOME/bin"
+          fi
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/bin:$PATH"
+          ninja.exe --version
+
+      - name: Apply and verify Chromium 150 Cronet patch
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euxo pipefail
+          test "$(tr -d '\n' < CHROMIUM_VERSION)" = "150.0.7871.63"
+          test -f src/DEPS
+          git apply --check --whitespace=nowarn \
+            patches/cronet/cronet-v150-cycronet-features.patch
+          git apply --whitespace=nowarn \
+            patches/cronet/cronet-v150-cycronet-features.patch
+          grep -Fq 'Cronet_WebSocket_Connect' \
+            src/components/cronet/native/include/cronet_websocket_c.h
+          grep -Fq 'static_library("cronet_static")' \
+            src/components/cronet/BUILD.gn
+
+      - name: Cache Windows x86 toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            src/third_party/llvm-build/Release+Asserts/
+            src/gn/
+            src/chrome/build/pgo_profiles/
+            ~/.cargo/bin/
+            ~/bin/ninja.exe
+          key: cronet-windows-x86-patch-${{ hashFiles('CHROMIUM_VERSION', 'src/DEPS', 'patches/cronet/cronet-v150-cycronet-features.patch') }}-v1
+
+      - name: Prepare Windows x86 toolchain
+        run: |
+          set -euxo pipefail
+          chmod +x ./get-clang.sh ./get-sysroot.sh ./build.sh
+          bash ./get-clang.sh
+          chmod +x ./gn/out/gn.exe \
+            ./third_party/llvm-build/Release+Asserts/bin/clang-cl.exe
+          test -f ./gn/out/gn.exe
+          test -f ./third_party/llvm-build/Release+Asserts/bin/clang-cl.exe
+          ./gn/out/gn.exe --version
+          ./third_party/llvm-build/Release+Asserts/bin/clang-cl.exe --version
+          test -f "$HOME/.cargo/bin/sccache.exe"
+
+      - name: Build patched Cronet Windows x86 static library
+        run: |
+          set -euxo pipefail
+          export PATH="$HOME/bin:$PATH"
+          "$HOME/.cargo/bin/sccache.exe" -z
+          bash ./build.sh
+          ninja.exe -C "$OUT_DIR" cronet_static
+          "$HOME/.cargo/bin/sccache.exe" -s
+
+      - name: Package patched Cronet Windows x86 static library
+        run: |
+          set -euxo pipefail
+          artifact_dir="$NAIVE_ROOT/cronet-artifact-windows-x86-patched-static"
+          mkdir -p "$artifact_dir"
+          found="$(find "$OUT_DIR" -type f \( \
+            -iname 'cronet_static.lib' -o -iname 'libcronet_static.lib' \
+          \) -print -quit || true)"
+          if [[ -z "$found" ]]; then
+            echo 'ERROR: No Cronet Windows x86 static library was produced.'
+            find "$OUT_DIR" -type f -iname '*.lib' -print | head -200 || true
+            exit 1
+          fi
+          cp -L "$found" "$artifact_dir/cronet_static.lib"
+          cp -L "$OUT_DIR/args.gn" "$artifact_dir/args.gn"
+          file "$artifact_dir/cronet_static.lib"
+          sha256sum "$artifact_dir/cronet_static.lib" \
+            | tee "$artifact_dir/SHA256SUMS.txt"
+          {
+            echo "naiveproxy revision: $(git -C "$NAIVE_ROOT" rev-parse HEAD)"
+            echo "Chromium version: $(tr -d '\n' < "$NAIVE_ROOT/CHROMIUM_VERSION")"
+            echo "Target OS: windows"
+            echo "Target CPU: x86"
+            echo "GN target: //components/cronet:cronet_static"
+            echo "Patch: patches/cronet/cronet-v150-cycronet-features.patch"
+            echo "Source library: $found"
+          } > "$artifact_dir/build-info.txt"
+
+      - name: Upload patched Cronet Windows x86 static library
+        uses: actions/upload-artifact@v4
+        with:
+          name: cronet-windows-x86-patched-static
+          path: cronet-artifact-windows-x86-patched-static
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
