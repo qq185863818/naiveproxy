@@ -1,4 +1,4 @@
-name: Build Patched Cronet Static Library from naiveproxy Linux x64
+name: Build Patched Cronet Shared Library from naiveproxy Linux x64
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: build-naiveproxy-cronet-linux-x64-patch
+  group: build-naiveproxy-cronet-linux-x64-patch-shared
   cancel-in-progress: true
 
 env:
@@ -17,7 +17,7 @@ env:
 
 jobs:
   linux-x64:
-    name: Build patched Cronet static library from naiveproxy Linux x64
+    name: Build patched Cronet shared library from naiveproxy Linux x64
     runs-on: ubuntu-22.04
     timeout-minutes: 360
     defaults:
@@ -84,7 +84,7 @@ jobs:
             src/components/cronet/cronet_proxy_delegate.h
           grep -Fq 'custom_signature_algorithm_prefs' \
             src/net/ssl/ssl_config_service.h
-          grep -Fq 'static_library("cronet_static")' \
+          grep -Fq 'shared_library("cronet")' \
             src/components/cronet/BUILD.gn
 
       - name: Cache repository toolchain and compiler cache
@@ -116,55 +116,57 @@ jobs:
           test -f "$sysroot/usr/include/features.h"
           test -f "$sysroot/usr/include/x86_64-linux-gnu/sys/types.h"
 
-      - name: Build patched Cronet static library
+      - name: Build patched Cronet shared library
         run: |
           set -euxo pipefail
           ccache -z
           EXTRA_FLAGS='target_cpu="x64" enable_websockets=true' bash ./build.sh
-          ninja -C "$OUT_DIR" cronet_static
+          ninja -C "$OUT_DIR" cronet
           ccache -s
 
-      - name: Locate and validate Cronet static library
+      - name: Locate and validate Cronet Linux x64 shared library
         run: |
           set -euxo pipefail
           artifact_dir="$RUNNER_TEMP/cronet-artifact"
           mkdir -p "$artifact_dir"
 
           found="$(find "$OUT_DIR" -type f \( \
-            -name 'libcronet_static.a' -o \
-            -name 'cronet_static.a' \
+            -name 'libcronet.so' -o \
+            -name 'libcronet.*.so' -o \
+            -name 'cronet.*.so' \
           \) -print -quit || true)"
           if [[ -z "$found" ]]; then
-            echo 'ERROR: No Cronet static library was produced.'
-            find "$OUT_DIR" -type f -name '*.a' -print | head -200 || true
+            echo 'ERROR: No Cronet shared library was produced.'
+            find "$OUT_DIR" -type f -name '*.so' -print | head -200 || true
             exit 1
           fi
 
           echo "Found: $found"
-          cp -L "$found" "$artifact_dir/libcronet.a"
+          cp -L "$found" "$artifact_dir/libcronet.so"
           cp -L "$OUT_DIR/args.gn" "$artifact_dir/args.gn"
-          file "$artifact_dir/libcronet.a"
-          ar t "$artifact_dir/libcronet.a" | grep -E \
-            'cronet|ssl_client_socket|socks5_client_socket|cronet_websocket' \
-            | head -40
+          file "$artifact_dir/libcronet.so"
+          readelf -h "$artifact_dir/libcronet.so"
+          file "$artifact_dir/libcronet.so" \
+            | grep -Eq 'ELF 64-bit.*x86-64'
 
-          sha256sum "$artifact_dir/libcronet.a" \
+          sha256sum "$artifact_dir/libcronet.so" \
             | tee "$artifact_dir/SHA256SUMS.txt"
           {
             echo "naiveproxy revision: $(git -C "$NAIVE_ROOT" rev-parse HEAD)"
             echo "Chromium version: $(tr -d '\n' < "$NAIVE_ROOT/CHROMIUM_VERSION")"
             echo "Runner: ubuntu-22.04"
             echo "Architecture: x86_64"
-            echo "GN target: //components/cronet:cronet_static"
+            echo "GN target: //components/cronet:cronet"
             echo "Patch: patches/cronet/cronet-v150-cycronet-features.patch"
-            echo "Build command: EXTRA_FLAGS='target_cpu=\"x64\" enable_websockets=true' bash ./build.sh && ninja -C out/Release cronet_static"
+            echo "Build mode: shared library"
+            echo "Build command: EXTRA_FLAGS='target_cpu=\"x64\" enable_websockets=true' bash ./build.sh && ninja -C out/Release cronet"
             echo "Source library: $found"
           } > "$artifact_dir/build-info.txt"
 
-      - name: Upload patched Cronet static library
+      - name: Upload patched Cronet Linux x64 shared library
         uses: actions/upload-artifact@v4
         with:
-          name: cronet-linux-x64-patched-static
+          name: cronet-linux-x64-patched
           path: ${{ runner.temp }}/cronet-artifact
           if-no-files-found: error
           compression-level: 0
