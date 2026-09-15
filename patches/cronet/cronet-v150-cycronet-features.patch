@@ -379,6 +379,37 @@ diff --git a/src/components/cronet/native/BUILD.gn b/src/components/cronet/nativ
 index 90cac6729a1e43db0180c719f32e811b9a6ba7a1..0ddeb3cf8ced1a3bb220471438c5dc312aafc663 100644
 --- a/src/components/cronet/native/BUILD.gn
 +++ b/src/components/cronet/native/BUILD.gn
+@@ -14,3 +14,17 @@
+ }
+ 
++source_set("cronet_utf8_validator") {
++  defines = [ "BASE_I18N_IMPLEMENTATION" ]
++  sources = [
++    "//base/i18n/streaming_utf8_validator.cc",
++    "//base/i18n/streaming_utf8_validator.h",
++    "//base/i18n/utf8_validator_tables.cc",
++    "//base/i18n/utf8_validator_tables.h",
++  ]
++  deps = [
++    "//base",
++    "//base/i18n:base_i18n_export",
++  ]
++}
++
+ source_set("cronet_native_headers") {
+@@ -37,11 +37,12 @@
+ source_set("cronet_native_impl") {
+   deps = [
+     ":cronet_native_headers",
++    ":cronet_utf8_validator",
+     "//base",
+     "//components/cronet:cronet_common",
+     "//components/cronet:cronet_version_header",
+     "//components/cronet:metrics_util",
+     "//components/grpc_support",
+     "//net",
+   ]
+ 
 @@ -67,5 +67,7 @@ source_set("cronet_native_impl") {
      # Generated from cronet.idl.
      "generated/cronet.idl_impl_interface.cc",
