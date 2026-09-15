@@ -1,0 +1,145 @@
+name: Build modified Cronet Windows x86
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-modified-cronet-windows-x86
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+    working-directory: src
+
+jobs:
+  windows-x86:
+    name: Build modified Cronet Windows x86
+    runs-on: windows-2022
+    timeout-minutes: 360
+    env:
+      EXTRA_FLAGS: 'target_cpu="x86"'
+      TARGET_OS: win
+      TARGET_CPU: x86
+      NAIVE_ROOT: ..
+      CHROMIUM_SRC: .
+      OUT_DIR: out/Release
+
+    steps:
+      - name: Checkout modified naiveproxy source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Cache Windows x86 toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            src/third_party/llvm-build/Release+Asserts/
+            src/gn/
+            src/chrome/build/pgo_profiles/
+            ~/.cargo/bin/
+            ~/bin/ninja.exe
+          key: cronet-windows-x86-toolchain-${{ hashFiles('CHROMIUM_VERSION', 'src/DEPS') }}-v1
+
+      - name: Install Windows Ninja
+        run: |
+          set -euxo pipefail
+          mkdir -p "$HOME/bin"
+          if [[ ! -f "$HOME/bin/ninja.exe" ]]; then
+            curl -fsSL \
+              -o "$HOME/bin/ninja-win.zip" \
+              https://github.com/ninja-build/ninja/releases/download/v1.10.2/ninja-win.zip
+            unzip -o "$HOME/bin/ninja-win.zip" -d "$HOME/bin"
+          fi
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/bin:$PATH"
+          ninja.exe --version
+
+      - name: Verify modified Cronet source
+        run: |
+          set -euxo pipefail
+          test -f "$NAIVE_ROOT/CHROMIUM_VERSION"
+          test -f "$CHROMIUM_SRC/DEPS"
+          test -f "$CHROMIUM_SRC/components/cronet/BUILD.gn"
+          grep -Fq 'static_library("cronet_static")' \
+            "$CHROMIUM_SRC/components/cronet/BUILD.gn"
+          grep -Fq 'shared_library("cronet")' \
+            "$CHROMIUM_SRC/components/cronet/BUILD.gn"
+          git -C "$NAIVE_ROOT" rev-parse HEAD
+          printf 'Chromium version: '
+          tr -d '\n' < "$NAIVE_ROOT/CHROMIUM_VERSION"
+          printf '\n'
+
+      - name: Prepare Windows x86 toolchain
+        run: |
+          set -euxo pipefail
+          chmod +x ./get-clang.sh ./get-sysroot.sh ./build.sh
+          bash ./get-clang.sh
+          chmod +x ./gn/out/gn.exe \
+            ./third_party/llvm-build/Release+Asserts/bin/clang-cl.exe
+          test -f ./gn/out/gn.exe
+          test -f ./third_party/llvm-build/Release+Asserts/bin/clang-cl.exe
+          ./gn/out/gn.exe --version
+          ./third_party/llvm-build/Release+Asserts/bin/clang-cl.exe --version
+          test -f "$HOME/.cargo/bin/sccache.exe"
+
+      - name: Build modified Cronet Windows x86 shared library
+        run: |
+          set -euxo pipefail
+          export PATH="$HOME/bin:$PATH"
+          "$HOME/.cargo/bin/sccache.exe" -z
+          bash ./build.sh
+          ninja.exe -C "$OUT_DIR" cronet
+          "$HOME/.cargo/bin/sccache.exe" -s
+
+      - name: Package and validate Cronet Windows x86 library
+        run: |
+          set -euxo pipefail
+          artifact_dir="$NAIVE_ROOT/cronet-artifact-windows-x86"
+          mkdir -p "$artifact_dir"
+
+          found="$(find "$OUT_DIR" -type f \( \
+            -iname 'cronet.dll' -o \
+            -iname 'libcronet.dll' -o \
+            -iname 'cronet.*.dll' \
+          \) -print -quit || true)"
+
+          if [[ -z "$found" ]]; then
+            echo 'ERROR: No Cronet Windows x86 DLL was produced.'
+            find "$OUT_DIR" -type f -iname '*.dll' -print | head -200 || true
+            exit 1
+          fi
+
+          echo "Found: $found"
+          cp -L "$found" "$artifact_dir/cronet.dll"
+          cp -L "$OUT_DIR/args.gn" "$artifact_dir/args.gn"
+
+          file_output="$(file "$artifact_dir/cronet.dll")"
+          echo "$file_output"
+          echo "$file_output" | grep -Eiq 'PE32.*(80386|i386|Intel 80386|Intel i386)'
+          sha256sum "$artifact_dir/cronet.dll" \
+            | tee "$artifact_dir/SHA256SUMS.txt"
+
+          {
+            echo "naiveproxy revision: $(git -C "$NAIVE_ROOT" rev-parse HEAD)"
+            echo "Chromium version: $(tr -d '\n' < "$NAIVE_ROOT/CHROMIUM_VERSION")"
+            echo "Target OS: windows"
+            echo "Target CPU: x86"
+            echo "Runner: windows-2022"
+            echo "GN target: //components/cronet:cronet"
+            echo "Source library: $found"
+            echo "Build command: EXTRA_FLAGS=$EXTRA_FLAGS bash ./build.sh && ninja.exe -C out/Release cronet"
+          } > "$artifact_dir/build-info.txt"
+
+      - name: Upload Cronet Windows x86 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cronet-windows-x86-test
+          path: cronet-artifact-windows-x86
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
