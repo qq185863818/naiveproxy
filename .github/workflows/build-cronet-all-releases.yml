@@ -1,4 +1,4 @@
-name: Build modified Cronet Linux, OpenWrt and Windows (manual/release)
+name: Build modified Cronet Linux, OpenWrt, Windows and macOS (manual/release)
 
 on:
   workflow_dispatch:
