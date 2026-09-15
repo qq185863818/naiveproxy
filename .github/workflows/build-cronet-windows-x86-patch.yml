@@ -52,10 +52,15 @@ jobs:
           set -euxo pipefail
           test "$(tr -d '\r\n' < CHROMIUM_VERSION)" = "150.0.7871.63"
           test -f src/DEPS
+          patch_file="patches/cronet/cronet-v150-cycronet-features.patch"
+          normalized_patch="$PWD/.cronet-v150-cycronet-features.lf.patch"
+          tr -d '\r' < "$patch_file" > "$normalized_patch"
+          test -s "$normalized_patch"
           git apply --check --whitespace=nowarn \
-            patches/cronet/cronet-v150-cycronet-features.patch
+            "$normalized_patch"
           git apply --whitespace=nowarn \
-            patches/cronet/cronet-v150-cycronet-features.patch
+            "$normalized_patch"
+          rm -f "$normalized_patch"
           grep -Fq 'Cronet_WebSocket_Connect' \
             src/components/cronet/native/include/cronet_websocket_c.h
           grep -Fq 'static_library("cronet_static")' \
