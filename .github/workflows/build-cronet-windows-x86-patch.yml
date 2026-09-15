@@ -50,7 +50,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           set -euxo pipefail
-          test "$(tr -d '\n' < CHROMIUM_VERSION)" = "150.0.7871.63"
+          test "$(tr -d '\r\n' < CHROMIUM_VERSION)" = "150.0.7871.63"
           test -f src/DEPS
           git apply --check --whitespace=nowarn \
             patches/cronet/cronet-v150-cycronet-features.patch
@@ -114,7 +114,7 @@ jobs:
             | tee "$artifact_dir/SHA256SUMS.txt"
           {
             echo "naiveproxy revision: $(git -C "$NAIVE_ROOT" rev-parse HEAD)"
-            echo "Chromium version: $(tr -d '\n' < "$NAIVE_ROOT/CHROMIUM_VERSION")"
+            echo "Chromium version: $(tr -d '\r\n' < "$NAIVE_ROOT/CHROMIUM_VERSION")"
             echo "Target OS: windows"
             echo "Target CPU: x86"
             echo "GN target: //components/cronet:cronet_static"
