@@ -2,11 +2,22 @@ name: Build modified Cronet Linux, OpenWrt and Windows (manual/release)
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag for manual artifact upload
+        required: false
+        type: string
+      upload_to_release:
+        description: Attach generated archives to the release
+        required: false
+        default: false
+        type: boolean
   release:
     types: [published]
 
 permissions:
-  contents: read
+  actions: read
+  contents: write
 
 concurrency:
   group: build-modified-cronet-multiplatform-releases
@@ -335,6 +346,71 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
+
+  release:
+    name: Attach Cronet artifacts to GitHub Release
+    if: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.upload_to_release) }}
+    needs:
+      - linux
+      - openwrt
+      - windows
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: write
+    defaults:
+      run:
+        shell: bash
+        working-directory: .
+
+    steps:
+      - name: Download Cronet workflow artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          pattern: cronet-*
+          merge-multiple: false
+
+      - name: Validate release target
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: |
+          set -euxo pipefail
+          test -n "$RELEASE_TAG"
+          gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" >/dev/null
+
+      - name: Package and attach artifacts to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: |
+          set -euxo pipefail
+          mkdir -p release-assets
+
+          artifact_count=0
+          while IFS= read -r -d '' artifact_dir; do
+            artifact_name="${artifact_dir##*/}"
+            tar -czf "release-assets/${artifact_name}.tar.gz" \
+              -C "$artifact_dir" .
+            artifact_count=$((artifact_count + 1))
+          done < <(
+            find release-artifacts \
+              -mindepth 1 -maxdepth 1 -type d -print0 | sort -z
+          )
+
+          test "$artifact_count" -gt 0
+          sha256sum release-assets/*.tar.gz \
+            > release-assets/SHA256SUMS-cronet.txt
+          ls -lh release-assets
+
+          gh release upload "$RELEASE_TAG" \
+            release-assets/*.tar.gz \
+            release-assets/SHA256SUMS-cronet.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
 
   openwrt:
     needs: cache-toolchains-posix
