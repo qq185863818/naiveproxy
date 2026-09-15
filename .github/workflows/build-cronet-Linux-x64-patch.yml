@@ -147,9 +147,6 @@ jobs:
           ar t "$artifact_dir/libcronet.a" | grep -E \
             'cronet|ssl_client_socket|socks5_client_socket|cronet_websocket' \
             | head -40
-          nm -g --defined-only "$artifact_dir/libcronet.a" | grep -E \
-            'Cronet_Engine_Create|Cronet_WebSocket_Create|Cronet_WebSocket_Connect' \
-            | head -20
 
           sha256sum "$artifact_dir/libcronet.a" \
             | tee "$artifact_dir/SHA256SUMS.txt"
