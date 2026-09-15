@@ -2354,6 +2354,18 @@ diff --git a/src/third_party/boringssl/src/ssl/handshake_client.cc b/src/third_p
 index 7ab6d2c5379887ab10c5efbdbb32074cbd69efd9..94389f50a06e27d10158bebc04c724c65df1b734 100644
 --- a/src/third_party/boringssl/src/ssl/handshake_client.cc
 +++ b/src/third_party/boringssl/src/ssl/handshake_client.cc
+@@ -86,7 +86,11 @@
+ static bool ssl_add_tls13_cipher(CBB *cbb, uint16_t cipher_id,
+                                  ssl_compliance_policy_t policy) {
++  const SSL_CIPHER *cipher = SSL_get_cipher_by_value(cipher_id);
++  if (cipher == nullptr || cipher->algorithm_mkey != SSL_kGENERIC) {
++    return true;
++  }
+   if (ssl_tls13_cipher_meets_policy(cipher_id, policy)) {
+     return CBB_add_u16(cbb, cipher_id);
+   }
+   return true;
+ }
 @@ -108,8 +108,7 @@ static bool ssl_write_client_cipher_list(const SSL_HANDSHAKE *hs, CBB *out,
      return false;
    }
