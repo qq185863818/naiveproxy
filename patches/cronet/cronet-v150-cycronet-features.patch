@@ -2160,7 +2160,7 @@ diff --git a/src/net/spdy/spdy_http_utils.cc b/src/net/spdy/spdy_http_utils.cc
 index 34057c2620177d1b545a1a8125c6d4be5d36c045..d797d1ddab4ff2d9a6f8d7a5403f910b3bbaf0a4 100644
 --- a/src/net/spdy/spdy_http_utils.cc
 +++ b/src/net/spdy/spdy_http_utils.cc
-@@ -38,11 +38,17 @@ namespace {
+@@ -38,11 +38,19 @@ namespace {
  // sizes in ricea@'s cache on 3 Aug 2023.
  constexpr size_t kExpectedRawHeaderSize = 4035;
  
@@ -2175,8 +2175,10 @@ index 34057c2620177d1b545a1a8125c6d4be5d36c045..d797d1ddab4ff2d9a6f8d7a5403f910b
 +  if (base::EqualsCaseInsensitiveASCII(name, "cookie")) {
 +    auto it = headers->find(name);
 +    if (it != headers->end()) {
-+      it->second.append("; ");
-+      it->second.append(value);
++      std::string combined = std::string(it->second);
++      combined.append("; ");
++      combined.append(value);
++      (*headers)[std::string(name)] = combined;
 +      return;
 +    }
 +  }
