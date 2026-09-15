@@ -86,6 +86,8 @@ jobs:
             src/net/ssl/ssl_config_service.h
           grep -Fq 'shared_library("cronet")' \
             src/components/cronet/BUILD.gn
+          grep -Fq 'cronet_utf8_validator' \
+            src/components/cronet/native/BUILD.gn
 
       - name: Cache repository toolchain and compiler cache
         uses: actions/cache@v4
