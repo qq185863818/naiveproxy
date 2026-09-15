@@ -92,6 +92,12 @@ jobs:
             ./build/toolchain/apple/swiftc.py \
             ./build/toolchain/apple/compile_xcassets.py
           bash ./get-clang.sh
+          clang_bin=./third_party/llvm-build/Release+Asserts/bin
+          if [[ ! -x "$clang_bin/llvm-otool" ]]; then
+            otool_path="$(xcrun --sdk macosx --find otool)"
+            test -x "$otool_path"
+            ln -sf "$otool_path" "$clang_bin/llvm-otool"
+          fi
           chmod +x ./gn/out/gn \
             ./third_party/llvm-build/Release+Asserts/bin/clang \
             ./third_party/llvm-build/Release+Asserts/bin/clang++
@@ -99,6 +105,10 @@ jobs:
           test -x ./third_party/llvm-build/Release+Asserts/bin/clang
           test -x ./third_party/llvm-build/Release+Asserts/bin/clang++
           test -x ./build/toolchain/apple/linker_driver.py
+          test -x "$clang_bin/llvm-otool"
+          test -x "$clang_bin/llvm-nm"
+          test -x "$clang_bin/llvm-strip"
+          test -x "$clang_bin/llvm-install-name-tool"
           ./gn/out/gn --version
           ./third_party/llvm-build/Release+Asserts/bin/clang --version
 
