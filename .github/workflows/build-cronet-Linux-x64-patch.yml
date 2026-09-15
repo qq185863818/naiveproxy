@@ -112,7 +112,9 @@ jobs:
           chmod +x "$CHROMIUM_SRC/gn/out/gn"
           test -x "$CHROMIUM_SRC/gn/out/gn"
           test -x "$CHROMIUM_SRC/third_party/llvm-build/Release+Asserts/bin/clang"
-          test -f "$CHROMIUM_SRC/out/sysroot-build/bullseye/bullseye_amd64_staging/usr/include/sys/types.h"
+          sysroot="$CHROMIUM_SRC/out/sysroot-build/bullseye/bullseye_amd64_staging"
+          test -f "$sysroot/usr/include/features.h"
+          test -f "$sysroot/usr/include/x86_64-linux-gnu/sys/types.h"
 
       - name: Build patched Cronet static library
         run: |
