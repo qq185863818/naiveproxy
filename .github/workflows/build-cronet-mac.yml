@@ -93,11 +93,36 @@ jobs:
             ./build/toolchain/apple/compile_xcassets.py
           bash ./get-clang.sh
           clang_bin=./third_party/llvm-build/Release+Asserts/bin
-          if [[ ! -x "$clang_bin/llvm-otool" ]]; then
-            otool_path="$(xcrun --sdk macosx --find otool)"
-            test -x "$otool_path"
-            ln -sf "$otool_path" "$clang_bin/llvm-otool"
-          fi
+
+          link_apple_tool() {
+            local bundled_name="$1"
+            shift
+
+            if [[ -x "$clang_bin/$bundled_name" ]]; then
+              return 0
+            fi
+
+            local candidate
+            local tool_path
+            for candidate in "$@"; do
+              if tool_path="$(xcrun --sdk macosx --find "$candidate" 2>/dev/null)" \
+                && [[ -x "$tool_path" ]]; then
+                ln -sf "$tool_path" "$clang_bin/$bundled_name"
+                return 0
+              fi
+            done
+
+            echo "ERROR: Could not provide $bundled_name in $clang_bin"
+            return 1
+          }
+
+          # Some Chromium macOS LLVM archives omit Apple inspection tools.
+          # The linker driver only needs their compatible system counterparts.
+          link_apple_tool llvm-otool otool
+          link_apple_tool llvm-nm llvm-nm nm
+          link_apple_tool llvm-strip llvm-strip strip
+          link_apple_tool llvm-install-name-tool llvm-install-name-tool install_name_tool
+
           chmod +x ./gn/out/gn \
             ./third_party/llvm-build/Release+Asserts/bin/clang \
             ./third_party/llvm-build/Release+Asserts/bin/clang++
