@@ -379,7 +379,7 @@ diff --git a/src/components/cronet/native/BUILD.gn b/src/components/cronet/nativ
 index 90cac6729a1e43db0180c719f32e811b9a6ba7a1..0ddeb3cf8ced1a3bb220471438c5dc312aafc663 100644
 --- a/src/components/cronet/native/BUILD.gn
 +++ b/src/components/cronet/native/BUILD.gn
-@@ -14,3 +14,17 @@
+@@ -14,3 +14,16 @@
  }
  
 +source_set("cronet_utf8_validator") {
@@ -392,7 +392,6 @@ index 90cac6729a1e43db0180c719f32e811b9a6ba7a1..0ddeb3cf8ced1a3bb220471438c5dc31
 +  ]
 +  deps = [
 +    "//base",
-+    "//base/i18n:base_i18n_export",
 +  ]
 +}
 +
