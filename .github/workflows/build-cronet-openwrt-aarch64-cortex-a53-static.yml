@@ -1,0 +1,194 @@
+name: Build modified Cronet OpenWrt aarch64 cortex-a53 static
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-modified-cronet-openwrt-aarch64-cortex-a53-static
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+    working-directory: src
+
+env:
+  EXTRA_FLAGS: 'target_cpu="arm64" target_os="openwrt" arm_cpu="cortex-a53" build_static=false use_allocator_shim=false use_partition_alloc=false'
+  OPENWRT_FLAGS: 'arch=aarch64_cortex-a53-static release=24.10.0 gcc_ver=13.3.0 target=sunxi subtarget=cortexa53'
+  TARGET_OS: openwrt
+  TARGET_CPU: arm64
+  TARGET_ARCH: aarch64_cortex-a53-static
+  NAIVE_ROOT: ..
+  CHROMIUM_SRC: .
+  OUT_DIR: out/Release
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+
+jobs:
+  openwrt-aarch64-cortex-a53-static:
+    name: Build modified Cronet OpenWrt aarch64_cortex-a53-static
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout modified naiveproxy source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install OpenWrt build dependencies
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils \
+            build-essential \
+            bubblewrap \
+            ca-certificates \
+            ccache \
+            curl \
+            file \
+            git \
+            git-lfs \
+            gnupg \
+            gpgv \
+            lsb-release \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-requests \
+            rsync \
+            unzip \
+            xz-utils \
+            zip
+
+      - name: Cache OpenWrt toolchain and host tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            src/third_party/llvm-build/Release+Asserts/
+            src/gn/
+            src/chrome/build/pgo_profiles/
+            src/.host_tool_cache/
+            src/qemu-user*.deb
+          key: cronet-posix-toolchain-${{ hashFiles('CHROMIUM_VERSION', 'src/DEPS') }}-v2
+
+      - name: Cache OpenWrt sysroot
+        uses: actions/cache@v4
+        with:
+          path: src/out/sysroot-build/openwrt/
+          key: cronet-openwrt-sysroot-${{ env.TARGET_ARCH }}-${{ hashFiles('CHROMIUM_VERSION', 'src/get-openwrt.sh') }}-v2
+
+      - id: ccache-timestamp
+        name: Create ccache cache key
+        run: echo "CCACHE_TIMESTAMP=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache OpenWrt compiler output
+        uses: actions/cache@v4
+        with:
+          path: .ccache/
+          key: cronet-openwrt-ccache-${{ env.TARGET_ARCH }}-${{ hashFiles('CHROMIUM_VERSION', 'src/DEPS', 'src/build.sh', 'src/components/cronet/BUILD.gn') }}-${{ steps.ccache-timestamp.outputs.CCACHE_TIMESTAMP }}
+          restore-keys: |
+            cronet-openwrt-ccache-${{ env.TARGET_ARCH }}-${{ hashFiles('CHROMIUM_VERSION', 'src/DEPS', 'src/build.sh', 'src/components/cronet/BUILD.gn') }}-
+
+      - name: Download qemu-user helper for OpenWrt build
+        run: |
+          set -euxo pipefail
+          if ! compgen -G 'qemu-user*.deb' > /dev/null; then
+            curl -fL \
+              -o qemu-user_9.2.2+ds-1+b2_amd64.deb \
+              https://snapshot.debian.org/archive/debian/20250405T083429Z/pool/main/q/qemu/qemu-user_9.2.2%2Bds-1%2Bb2_amd64.deb
+          fi
+          test -n "$(find . -maxdepth 1 -type f -name 'qemu-user*.deb' -print -quit)"
+
+      - name: Install cross-build helpers
+        run: |
+          set -euxo pipefail
+          sudo apt-get remove -y qemu-user-binfmt || true
+          sudo dpkg -i qemu-user*.deb
+          sudo apt-get remove -y libc6-i386 || true
+
+      - name: Verify modified Cronet targets
+        run: |
+          set -euxo pipefail
+          test -f "$NAIVE_ROOT/CHROMIUM_VERSION"
+          test -f "$CHROMIUM_SRC/components/cronet/BUILD.gn"
+          grep -Fq 'static_library("cronet_static")' \
+            "$CHROMIUM_SRC/components/cronet/BUILD.gn"
+          grep -Fq 'shared_library("cronet")' \
+            "$CHROMIUM_SRC/components/cronet/BUILD.gn"
+          git -C "$NAIVE_ROOT" rev-parse HEAD
+          printf 'Chromium version: '
+          tr -d '\n' < "$NAIVE_ROOT/CHROMIUM_VERSION"
+          printf '\n'
+
+      - name: Prepare OpenWrt repository toolchain
+        run: |
+          set -euxo pipefail
+          chmod +x ./get-clang.sh ./get-sysroot.sh ./get-openwrt.sh ./build.sh
+          bash ./get-clang.sh
+          chmod +x ./gn/out/gn
+          test -x ./gn/out/gn
+          test -x ./third_party/llvm-build/Release+Asserts/bin/clang
+
+      - name: Build modified Cronet OpenWrt shared library
+        run: |
+          set -euxo pipefail
+          ccache -z
+          bash ./build.sh
+          ninja -C "$OUT_DIR" cronet
+          ccache -s
+
+      - name: Package and validate Cronet OpenWrt library
+        run: |
+          set -euxo pipefail
+          artifact_dir="$NAIVE_ROOT/cronet-artifact-openwrt-aarch64-cortex-a53-static"
+          mkdir -p "$artifact_dir"
+
+          found="$(find "$OUT_DIR" -type f \( \
+            -name 'libcronet.so' -o \
+            -name 'libcronet.*.so' -o \
+            -name 'cronet.*.so' \
+          \) -print -quit || true)"
+
+          if [[ -z "$found" ]]; then
+            echo 'ERROR: No Cronet OpenWrt shared library was produced.'
+            find "$OUT_DIR" -type f -name '*.so' -print | head -200 || true
+            exit 1
+          fi
+
+          echo "Found: $found"
+          cp -L "$found" "$artifact_dir/libcronet.so"
+          cp -L "$OUT_DIR/args.gn" "$artifact_dir/args.gn"
+
+          file_output="$(file "$artifact_dir/libcronet.so")"
+          echo "$file_output"
+          echo "$file_output" | grep -Eiq 'ELF 64-bit.*(ARM aarch64|AArch64)'
+          readelf -h "$artifact_dir/libcronet.so"
+          sha256sum "$artifact_dir/libcronet.so" \
+            | tee "$artifact_dir/SHA256SUMS.txt"
+
+          {
+            echo "naiveproxy revision: $(git -C "$NAIVE_ROOT" rev-parse HEAD)"
+            echo "Chromium version: $(tr -d '\n' < "$NAIVE_ROOT/CHROMIUM_VERSION")"
+            echo "Target OS: $TARGET_OS"
+            echo "Target CPU: $TARGET_CPU"
+            echo "OpenWrt arch: $TARGET_ARCH"
+            echo "OpenWrt flags: $OPENWRT_FLAGS"
+            echo "Build mode: shared library with build_static=false"
+            echo "Runner: ubuntu-22.04"
+            echo "GN target: //components/cronet:cronet"
+            echo "Source library: $found"
+            echo "Build command: EXTRA_FLAGS=$EXTRA_FLAGS OPENWRT_FLAGS=$OPENWRT_FLAGS bash ./build.sh && ninja -C out/Release cronet"
+          } > "$artifact_dir/build-info.txt"
+
+      - name: Upload Cronet OpenWrt artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cronet-openwrt-aarch64-cortex-a53-static-test
+          path: cronet-artifact-openwrt-aarch64-cortex-a53-static
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
