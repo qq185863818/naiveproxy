@@ -1,4 +1,4 @@
-name: Build modified Cronet macOS static library
+name: Build modified Cronet macOS shared library
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ defaults:
 
 jobs:
   macos:
-    name: Build modified Cronet macOS ${{ matrix.arch }} static library
+    name: Build modified Cronet macOS ${{ matrix.arch }} shared library
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     strategy:
@@ -75,7 +75,7 @@ jobs:
           set -euxo pipefail
           test -f "$NAIVE_ROOT/CHROMIUM_VERSION"
           test -f "$CHROMIUM_SRC/components/cronet/BUILD.gn"
-          grep -Fq 'static_library("cronet_static")' \
+          grep -Fq 'shared_library("cronet")' \
             "$CHROMIUM_SRC/components/cronet/BUILD.gn"
           git -C "$NAIVE_ROOT" rev-parse HEAD
           printf 'Chromium version: '
@@ -86,6 +86,11 @@ jobs:
         run: |
           set -euxo pipefail
           chmod +x ./get-clang.sh ./get-sysroot.sh ./build.sh
+          chmod +x \
+            ./build/toolchain/apple/linker_driver.py \
+            ./build/toolchain/apple/filter_libtool.py \
+            ./build/toolchain/apple/swiftc.py \
+            ./build/toolchain/apple/compile_xcassets.py
           bash ./get-clang.sh
           chmod +x ./gn/out/gn \
             ./third_party/llvm-build/Release+Asserts/bin/clang \
@@ -93,49 +98,51 @@ jobs:
           test -x ./gn/out/gn
           test -x ./third_party/llvm-build/Release+Asserts/bin/clang
           test -x ./third_party/llvm-build/Release+Asserts/bin/clang++
+          test -x ./build/toolchain/apple/linker_driver.py
           ./gn/out/gn --version
           ./third_party/llvm-build/Release+Asserts/bin/clang --version
 
-      - name: Build modified Cronet macOS static library
+      - name: Build modified Cronet macOS shared library
         run: |
           set -euxo pipefail
           ccache -z
           bash ./build.sh
-          ninja -C "$OUT_DIR" cronet_static
+          ninja -C "$OUT_DIR" cronet
           ccache -s
 
-      - name: Package and validate Cronet macOS static library
+      - name: Package and validate Cronet macOS shared library
         run: |
           set -euxo pipefail
           artifact_dir="$NAIVE_ROOT/cronet-artifact-macos-$TARGET_CPU"
           mkdir -p "$artifact_dir"
 
           found="$(find "$OUT_DIR" -type f \( \
-            -name 'libcronet_static.a' -o \
-            -name 'cronet_static.a' \
+            -name 'libcronet.dylib' -o \
+            -name 'cronet.dylib' -o \
+            -name 'libcronet.*.dylib' \
           \) -print -quit || true)"
 
           if [[ -z "$found" ]]; then
-            echo 'ERROR: No Cronet macOS static library was produced.'
-            find "$OUT_DIR" -type f -name '*.a' -print | head -200 || true
+            echo 'ERROR: No Cronet macOS shared library was produced.'
+            find "$OUT_DIR" -type f -name '*.dylib' -print | head -200 || true
             exit 1
           fi
 
           echo "Found: $found"
-          cp -L "$found" "$artifact_dir/libcronet_static.a"
+          cp -L "$found" "$artifact_dir/libcronet.dylib"
           cp -L "$OUT_DIR/args.gn" "$artifact_dir/args.gn"
 
-          file_output="$(file "$artifact_dir/libcronet_static.a")"
+          file_output="$(file "$artifact_dir/libcronet.dylib")"
           echo "$file_output"
           case "$TARGET_CPU" in
             x64) expected='x86_64' ;;
             arm64) expected='arm64' ;;
             *) echo "Unsupported macOS target CPU: $TARGET_CPU"; exit 1 ;;
           esac
-          lipo_output="$(lipo -info "$artifact_dir/libcronet_static.a")"
+          lipo_output="$(lipo -info "$artifact_dir/libcronet.dylib")"
           echo "$lipo_output"
           echo "$lipo_output" | grep -Eiq "$expected"
-          shasum -a 256 "$artifact_dir/libcronet_static.a" \
+          shasum -a 256 "$artifact_dir/libcronet.dylib" \
             | tee "$artifact_dir/SHA256SUMS.txt"
 
           {
@@ -144,16 +151,16 @@ jobs:
             echo "Target OS: macos"
             echo "Target CPU: $TARGET_CPU"
             echo "Runner: $RUNNER"
-            echo "GN target: //components/cronet:cronet_static"
+            echo "GN target: //components/cronet:cronet"
             echo "Source library: $found"
-            echo "Build mode: complete static library"
-            echo "Build command: EXTRA_FLAGS=$EXTRA_FLAGS bash ./build.sh && ninja -C out/Release cronet_static"
+            echo "Build mode: shared library"
+            echo "Build command: EXTRA_FLAGS=$EXTRA_FLAGS bash ./build.sh && ninja -C out/Release cronet"
           } > "$artifact_dir/build-info.txt"
 
       - name: Upload Cronet macOS artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cronet-macos-${{ matrix.arch }}-static
+          name: cronet-macos-${{ matrix.arch }}
           path: cronet-artifact-macos-${{ matrix.arch }}
           if-no-files-found: error
           compression-level: 0
