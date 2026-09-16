@@ -65,6 +65,15 @@ jobs:
             src/components/cronet/native/include/cronet_websocket_c.h
           grep -Fq 'SSL_set_custom_extension_order' \
             src/third_party/boringssl/src/include/openssl/ssl.h
+          grep -Fq 'int SSL_set_custom_extension_order' \
+            src/third_party/boringssl/src/ssl/extensions.cc
+          awk '
+            /BSSL_NAMESPACE_END/ { namespace_depth-- }
+            /int SSL_set_custom_extension_order/ && namespace_depth != 0 {
+              exit 1
+            }
+            /BSSL_NAMESPACE_BEGIN/ { namespace_depth++ }
+          ' src/third_party/boringssl/src/ssl/extensions.cc
           grep -Fq 'trust_anchor_ids' \
             src/components/cronet/url_request_context_config.cc
           grep -Fq 'Cronet_EngineParams_experimental_options_set_with_tls_extensions' \
