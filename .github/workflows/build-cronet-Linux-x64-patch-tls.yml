@@ -1,0 +1,181 @@
+name: Build Patched TLS Cronet Shared Library from naiveproxy Linux x64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-naiveproxy-cronet-linux-x64-patch-tls-shared
+  cancel-in-progress: true
+
+env:
+  NAIVE_ROOT: ${{ github.workspace }}
+  CHROMIUM_SRC: ${{ github.workspace }}/src
+  OUT_DIR: ${{ github.workspace }}/src/out/Release
+
+jobs:
+  linux-x64:
+    name: Build patched TLS Cronet shared library from naiveproxy Linux x64
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
+        working-directory: src
+
+    steps:
+      - name: Checkout naiveproxy with bundled Chromium source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Show runner information
+        run: |
+          set -euxo pipefail
+          uname -a
+          arch
+          nproc
+          free -h
+          df -h /
+          python3 --version
+          git --version
+
+      - name: Install basic host packages
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils \
+            build-essential \
+            bubblewrap \
+            ca-certificates \
+            ccache \
+            curl \
+            file \
+            git \
+            git-lfs \
+            gnupg \
+            gpgv \
+            lsb-release \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-requests \
+            rsync \
+            unzip \
+            xz-utils \
+            zip
+
+      - name: Apply and verify Chromium 150 TLS Cronet patch
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euxo pipefail
+          test "$(tr -d '\n' < CHROMIUM_VERSION)" = "150.0.7871.63"
+          test -f src/DEPS
+          git apply --check --whitespace=nowarn \
+            patches/cronet/cronet-v150-tls-order-trust-anchor.patch
+          git apply --whitespace=nowarn \
+            patches/cronet/cronet-v150-tls-order-trust-anchor.patch
+          grep -Fq 'Cronet_WebSocket_Connect' \
+            src/components/cronet/native/include/cronet_websocket_c.h
+          grep -Fq 'GetSocksAuthCredentials' \
+            src/components/cronet/cronet_proxy_delegate.h
+          grep -Fq 'custom_signature_algorithm_prefs' \
+            src/net/ssl/ssl_config_service.h
+          grep -Fq 'SSL_set_custom_extension_order' \
+            src/third_party/boringssl/src/include/openssl/ssl.h
+          grep -Fq 'trust_anchor_ids' \
+            src/components/cronet/url_request_context_config.cc
+          grep -Fq 'Cronet_EngineParams_experimental_options_set_with_tls_extensions' \
+            src/components/cronet/native/generated/cronet.idl_c.h
+          grep -Fq 'shared_library("cronet")' \
+            src/components/cronet/BUILD.gn
+          grep -Fq 'cronet_utf8_validator' \
+            src/components/cronet/native/BUILD.gn
+
+      - name: Cache repository toolchain and compiler cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            src/third_party/llvm-build/Release+Asserts/
+            src/gn/
+            src/chrome/build/pgo_profiles/
+            src/out/sysroot-build/
+            .ccache/
+          key: cronet-linux-x64-patch-tls-${{ hashFiles('CHROMIUM_VERSION', 'src/DEPS', 'src/build/linux/sysroot_scripts/sysroot_creator.py', 'patches/cronet/cronet-v150-tls-order-trust-anchor.patch') }}-v1
+
+      - name: Prepare repository toolchain
+        run: |
+          set -euxo pipefail
+          chmod +x ./get-clang.sh ./get-sysroot.sh ./build.sh \
+            ./build/linux/sysroot_scripts/generate_keyring.sh \
+            ./build/linux/sysroot_scripts/sysroot_creator.py
+          rm -f ./build/linux/sysroot_scripts/keyring.gpg
+          GPG_TTY=/dev/null \
+            bash ./build/linux/sysroot_scripts/generate_keyring.sh
+          EXTRA_FLAGS='target_cpu="x64" enable_websockets=true' \
+            bash ./get-clang.sh
+          chmod +x "$CHROMIUM_SRC/gn/out/gn"
+          test -x "$CHROMIUM_SRC/gn/out/gn"
+          test -x "$CHROMIUM_SRC/third_party/llvm-build/Release+Asserts/bin/clang"
+          sysroot="$CHROMIUM_SRC/out/sysroot-build/bullseye/bullseye_amd64_staging"
+          test -f "$sysroot/usr/include/features.h"
+          test -f "$sysroot/usr/include/x86_64-linux-gnu/sys/types.h"
+
+      - name: Build patched Cronet shared library
+        run: |
+          set -euxo pipefail
+          ccache -z
+          EXTRA_FLAGS='target_cpu="x64" enable_websockets=true' bash ./build.sh
+          ninja -C "$OUT_DIR" cronet
+          ccache -s
+
+      - name: Locate and validate Cronet Linux x64 shared library
+        run: |
+          set -euxo pipefail
+          artifact_dir="$RUNNER_TEMP/cronet-artifact"
+          mkdir -p "$artifact_dir"
+
+          found="$(find "$OUT_DIR" -type f \( \
+            -name 'libcronet.so' -o \
+            -name 'libcronet.*.so' -o \
+            -name 'cronet.*.so' \
+          \) -print -quit || true)"
+          if [[ -z "$found" ]]; then
+            echo 'ERROR: No Cronet shared library was produced.'
+            find "$OUT_DIR" -type f -name '*.so' -print | head -200 || true
+            exit 1
+          fi
+
+          echo "Found: $found"
+          cp -L "$found" "$artifact_dir/libcronet.so"
+          cp -L "$OUT_DIR/args.gn" "$artifact_dir/args.gn"
+          file "$artifact_dir/libcronet.so"
+          readelf -h "$artifact_dir/libcronet.so"
+          file "$artifact_dir/libcronet.so" \
+            | grep -Eq 'ELF 64-bit.*x86-64'
+
+          sha256sum "$artifact_dir/libcronet.so" \
+            | tee "$artifact_dir/SHA256SUMS.txt"
+          {
+            echo "naiveproxy revision: $(git -C "$NAIVE_ROOT" rev-parse HEAD)"
+            echo "Chromium version: $(tr -d '\n' < "$NAIVE_ROOT/CHROMIUM_VERSION")"
+            echo "Runner: ubuntu-22.04"
+            echo "Architecture: x86_64"
+            echo "GN target: //components/cronet:cronet"
+            echo "Patch: patches/cronet/cronet-v150-tls-order-trust-anchor.patch"
+            echo "Build mode: shared library"
+            echo "Build command: EXTRA_FLAGS='target_cpu=\"x64\" enable_websockets=true' bash ./build.sh && ninja -C out/Release cronet"
+            echo "Source library: $found"
+          } > "$artifact_dir/build-info.txt"
+
+      - name: Upload patched TLS Cronet Linux x64 shared library
+        uses: actions/upload-artifact@v4
+        with:
+          name: cronet-linux-x64-patched-tls
+          path: ${{ runner.temp }}/cronet-artifact
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
