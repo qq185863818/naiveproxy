@@ -1,0 +1,164 @@
+name: Build Patched TLS Cronet Windows x64 Shared Library Without Automatic Request Headers
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-patched-tls-no-automatic-request-headers-cronet-windows-x64-shared
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+    working-directory: src
+
+jobs:
+  windows-x64:
+    name: Build patched TLS Cronet Windows x64 shared library without automatic request headers
+    runs-on: windows-2022
+    timeout-minutes: 360
+    env:
+      EXTRA_FLAGS: 'target_cpu="x64" enable_websockets=true'
+      TARGET_CPU: x64
+      NAIVE_ROOT: ..
+      CHROMIUM_SRC: .
+      OUT_DIR: out/Release
+
+    steps:
+      - name: Checkout naiveproxy source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Windows Ninja
+        run: |
+          set -euxo pipefail
+          mkdir -p "$HOME/bin"
+          if [[ ! -f "$HOME/bin/ninja.exe" ]]; then
+            curl -fsSL -o "$HOME/bin/ninja-win.zip" \
+              https://github.com/ninja-build/ninja/releases/download/v1.10.2/ninja-win.zip
+            unzip -o "$HOME/bin/ninja-win.zip" -d "$HOME/bin"
+          fi
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/bin:$PATH"
+          ninja.exe --version
+
+      - name: Apply and verify Chromium 150 TLS Cronet patch without automatic request headers
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euxo pipefail
+          test "$(tr -d '\r\n' < CHROMIUM_VERSION)" = "150.0.7871.63"
+          test -f src/DEPS
+          patch_file="patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch"
+          normalized_patch="$PWD/.cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.lf.patch"
+          tr -d '\r' < "$patch_file" > "$normalized_patch"
+          test -s "$normalized_patch"
+          git apply --check --whitespace=nowarn \
+            "$normalized_patch"
+          git apply --whitespace=nowarn \
+            "$normalized_patch"
+          rm -f "$normalized_patch"
+          grep -Fq 'Cronet_WebSocket_Connect' \
+            src/components/cronet/native/include/cronet_websocket_c.h
+          grep -Fq 'SSL_set_custom_extension_order' \
+            src/third_party/boringssl/src/include/openssl/ssl.h
+          grep -Fq 'int SSL_set_custom_extension_order' \
+            src/third_party/boringssl/src/ssl/extensions.cc
+          awk '
+            /BSSL_NAMESPACE_END/ { namespace_depth-- }
+            /int SSL_set_custom_extension_order/ && namespace_depth != 0 {
+              exit 1
+            }
+            /BSSL_NAMESPACE_BEGIN/ { namespace_depth++ }
+          ' src/third_party/boringssl/src/ssl/extensions.cc
+          grep -Fq 'trust_anchor_ids' \
+            src/components/cronet/url_request_context_config.cc
+          grep -Fq 'Cronet_EngineParams_experimental_options_set_with_tls_extensions' \
+            src/components/cronet/native/generated/cronet.idl_c.h
+          grep -Fq 'shared_library("cronet")' \
+            src/components/cronet/BUILD.gn
+          grep -Fq 'cronet_utf8_validator' \
+            src/components/cronet/native/BUILD.gn
+          grep -Fq 'disable_automatic_request_headers' \
+            src/components/cronet/native/cronet.idl
+          grep -Fq 'Cronet_UrlRequestParams_disable_automatic_request_headers_set' \
+            src/components/cronet/native/generated/cronet.idl_c.h
+
+      - name: Cache Windows x64 toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            src/third_party/llvm-build/Release+Asserts/
+            src/gn/
+            src/chrome/build/pgo_profiles/
+            ~/.cargo/bin/
+            ~/bin/ninja.exe
+          key: cronet-windows-x64-patch-tls-no-automatic-request-headers-${{ hashFiles('CHROMIUM_VERSION', 'src/DEPS', 'patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch') }}-v1
+
+      - name: Prepare Windows x64 toolchain
+        run: |
+          set -euxo pipefail
+          chmod +x ./get-clang.sh ./get-sysroot.sh ./build.sh
+          bash ./get-clang.sh
+          chmod +x ./gn/out/gn.exe \
+            ./third_party/llvm-build/Release+Asserts/bin/clang-cl.exe
+          test -f ./gn/out/gn.exe
+          test -f ./third_party/llvm-build/Release+Asserts/bin/clang-cl.exe
+          ./gn/out/gn.exe --version
+          ./third_party/llvm-build/Release+Asserts/bin/clang-cl.exe --version
+          test -f "$HOME/.cargo/bin/sccache.exe"
+
+      - name: Build patched TLS Cronet Windows x64 shared library without automatic request headers
+        run: |
+          set -euxo pipefail
+          export PATH="$HOME/bin:$PATH"
+          "$HOME/.cargo/bin/sccache.exe" -z
+          bash ./build.sh
+          ninja.exe -C "$OUT_DIR" cronet
+          "$HOME/.cargo/bin/sccache.exe" -s
+
+      - name: Package patched TLS Cronet Windows x64 shared library without automatic request headers
+        run: |
+          set -euxo pipefail
+          artifact_dir="$NAIVE_ROOT/cronet-artifact-windows-x64-patched-tls-no-automatic-request-headers"
+          mkdir -p "$artifact_dir"
+          found="$(find "$OUT_DIR" -type f \( \
+            -iname 'cronet.dll' -o \
+            -iname 'libcronet.dll' -o \
+            -iname 'cronet.*.dll' \
+          \) -print -quit || true)"
+          if [[ -z "$found" ]]; then
+            echo 'ERROR: No Cronet Windows x64 DLL was produced.'
+            find "$OUT_DIR" -type f -iname '*.dll' -print | head -200 || true
+            exit 1
+          fi
+          cp -L "$found" "$artifact_dir/cronet.dll"
+          cp -L "$OUT_DIR/args.gn" "$artifact_dir/args.gn"
+          file_output="$(file "$artifact_dir/cronet.dll")"
+          echo "$file_output"
+          echo "$file_output" | grep -Eiq 'PE32\+.*x86-64'
+          sha256sum "$artifact_dir/cronet.dll" \
+            | tee "$artifact_dir/SHA256SUMS.txt"
+          {
+            echo "naiveproxy revision: $(git -C "$NAIVE_ROOT" rev-parse HEAD)"
+            echo "Chromium version: $(tr -d '\r\n' < "$NAIVE_ROOT/CHROMIUM_VERSION")"
+            echo "Target OS: windows"
+            echo "Target CPU: x64"
+            echo "GN target: //components/cronet:cronet"
+            echo "Patch: patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch"
+            echo "Build mode: shared library"
+            echo "Build command: EXTRA_FLAGS=$EXTRA_FLAGS bash ./build.sh && ninja.exe -C out/Release cronet"
+            echo "Source library: $found"
+          } > "$artifact_dir/build-info.txt"
+
+      - name: Upload patched TLS Cronet Windows x64 shared library without automatic request headers
+        uses: actions/upload-artifact@v4
+        with:
+          name: cronet-windows-x64-patched-tls-no-automatic-request-headers
+          path: cronet-artifact-windows-x64-patched-tls-no-automatic-request-headers
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
