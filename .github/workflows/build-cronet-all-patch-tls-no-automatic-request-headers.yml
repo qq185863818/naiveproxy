@@ -1,0 +1,1253 @@
+name: Build patched TLS Cronet without automatic request headers for Linux, OpenWrt, Windows and macOS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-patched-tls-no-automatic-request-headers-cronet-multiplatform
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+    working-directory: src
+
+jobs:
+  cache-toolchains-posix:
+    name: Prepare Linux and OpenWrt toolchains
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout naiveproxy source for patched POSIX toolchains
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install POSIX build dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils \
+            build-essential \
+            bubblewrap \
+            ca-certificates \
+            ccache \
+            curl \
+            file \
+            git \
+            git-lfs \
+            gnupg \
+            gpgv \
+            lsb-release \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-requests \
+            rsync \
+            unzip \
+            xz-utils \
+            zip
+
+      - name: Apply and verify Chromium 150 TLS Cronet patch without automatic request headers
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euxo pipefail
+          test "$(tr -d '\r\n' < CHROMIUM_VERSION)" = "150.0.7871.63"
+          test -f src/DEPS
+          git apply --check --whitespace=nowarn \
+            patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch
+          git apply --whitespace=nowarn \
+            patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch
+          grep -Fq 'Cronet_WebSocket_Connect' \
+            src/components/cronet/native/include/cronet_websocket_c.h
+          grep -Fq 'GetSocksAuthCredentials' \
+            src/components/cronet/cronet_proxy_delegate.h
+          grep -Fq 'custom_signature_algorithm_prefs' \
+            src/net/ssl/ssl_config_service.h
+          grep -Fq 'SSL_set_custom_extension_order' \
+            src/third_party/boringssl/src/include/openssl/ssl.h
+          grep -Fq 'int SSL_set_custom_extension_order' \
+            src/third_party/boringssl/src/ssl/extensions.cc
+          awk '
+            /BSSL_NAMESPACE_END/ { namespace_depth-- }
+            /int SSL_set_custom_extension_order/ && namespace_depth != 0 {
+              exit 1
+            }
+            /BSSL_NAMESPACE_BEGIN/ { namespace_depth++ }
+          ' src/third_party/boringssl/src/ssl/extensions.cc
+          grep -Fq 'trust_anchor_ids' \
+            src/components/cronet/url_request_context_config.cc
+          grep -Fq 'Cronet_EngineParams_experimental_options_set_with_tls_extensions' \
+            src/components/cronet/native/generated/cronet.idl_c.h
+          grep -Fq 'shared_library("cronet")' \
+            src/components/cronet/BUILD.gn
+          grep -Fq 'cronet_utf8_validator' \
+            src/components/cronet/native/BUILD.gn
+          grep -Fq 'disable_automatic_request_headers' \
+            src/components/cronet/native/cronet.idl
+          grep -Fq 'Cronet_UrlRequestParams_disable_automatic_request_headers_set' \
+            src/components/cronet/native/generated/cronet.idl_c.h
+
+      - name: Cache POSIX toolchains and host tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            src/third_party/llvm-build/Release+Asserts/
+            src/gn/
+            src/chrome/build/pgo_profiles/
+            src/.host_tool_cache/
+            src/qemu-user*.deb
+          key: cronet-posix-toolchain-patch-tls-no-automatic-request-headers-${{ hashFiles('CHROMIUM_VERSION', 'src/DEPS', 'patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch') }}-v1
+
+      - name: Prepare POSIX toolchain cache
+        shell: bash
+        working-directory: src
+        run: |
+          set -euxo pipefail
+          chmod +x ./get-clang.sh ./get-sysroot.sh ./build.sh \
+            ./build/linux/sysroot_scripts/generate_keyring.sh \
+            ./build/linux/sysroot_scripts/sysroot_creator.py
+          rm -f ./build/linux/sysroot_scripts/keyring.gpg
+          GPG_TTY=/dev/null \
+            bash ./build/linux/sysroot_scripts/generate_keyring.sh
+
+          if ! compgen -G 'qemu-user*.deb' > /dev/null; then
+            curl -fL \
+              -o qemu-user_9.2.2+ds-1+b2_amd64.deb \
+              https://snapshot.debian.org/archive/debian/20250405T083429Z/pool/main/q/qemu/qemu-user_9.2.2%2Bds-1%2Bb2_amd64.deb
+          fi
+          sudo apt-get remove -y qemu-user-binfmt || true
+          sudo dpkg -i qemu-user*.deb
+          sudo apt-get remove -y libc6-i386 || true
+
+          EXTRA_FLAGS='target_cpu="x64" enable_websockets=true' bash ./get-clang.sh
+          EXTRA_FLAGS='target_cpu="x64" enable_websockets=true' WARMUP_HOST_TOOLS=1 \
+            bash ./build.sh
+
+  cache-toolchains-win:
+    name: Prepare Windows toolchains
+    runs-on: windows-2022
+    timeout-minutes: 360
+    steps:
+      - name: Checkout naiveproxy source for patched Windows toolchains
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Cache Windows toolchains
+        uses: actions/cache@v4
+        with:
+          path: |
+            src/third_party/llvm-build/Release+Asserts/
+            src/gn/
+            src/chrome/build/pgo_profiles/
+            ~/.cargo/bin/
+            ~/bin/ninja.exe
+          key: cronet-windows-toolchain-patch-tls-no-automatic-request-headers-${{ hashFiles('CHROMIUM_VERSION', 'src/DEPS', 'patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch') }}-v1
+
+      - name: Install Windows Ninja
+        shell: bash
+        working-directory: src
+        run: |
+          set -euxo pipefail
+          mkdir -p "$HOME/bin"
+          if [[ ! -f "$HOME/bin/ninja.exe" ]]; then
+            curl -fsSL \
+              -o "$HOME/bin/ninja-win.zip" \
+              https://github.com/ninja-build/ninja/releases/download/v1.10.2/ninja-win.zip
+            unzip -o "$HOME/bin/ninja-win.zip" -d "$HOME/bin"
+          fi
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/bin:$PATH"
+          ninja.exe --version
+
+      - name: Apply and verify Chromium 150 TLS Cronet patch without automatic request headers
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euxo pipefail
+          test "$(tr -d '\r\n' < CHROMIUM_VERSION)" = "150.0.7871.63"
+          test -f src/DEPS
+          patch_file="patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch"
+          normalized_patch="$PWD/.cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.lf.patch"
+          tr -d '\r' < "$patch_file" > "$normalized_patch"
+          test -s "$normalized_patch"
+          git apply --check --whitespace=nowarn "$normalized_patch"
+          git apply --whitespace=nowarn "$normalized_patch"
+          rm -f "$normalized_patch"
+          grep -Fq 'Cronet_WebSocket_Connect' \
+            src/components/cronet/native/include/cronet_websocket_c.h
+          grep -Fq 'GetSocksAuthCredentials' \
+            src/components/cronet/cronet_proxy_delegate.h
+          grep -Fq 'custom_signature_algorithm_prefs' \
+            src/net/ssl/ssl_config_service.h
+          grep -Fq 'SSL_set_custom_extension_order' \
+            src/third_party/boringssl/src/include/openssl/ssl.h
+          grep -Fq 'int SSL_set_custom_extension_order' \
+            src/third_party/boringssl/src/ssl/extensions.cc
+          awk '
+            /BSSL_NAMESPACE_END/ { namespace_depth-- }
+            /int SSL_set_custom_extension_order/ && namespace_depth != 0 {
+              exit 1
+            }
+            /BSSL_NAMESPACE_BEGIN/ { namespace_depth++ }
+          ' src/third_party/boringssl/src/ssl/extensions.cc
+          grep -Fq 'trust_anchor_ids' \
+            src/components/cronet/url_request_context_config.cc
+          grep -Fq 'Cronet_EngineParams_experimental_options_set_with_tls_extensions' \
+            src/components/cronet/native/generated/cronet.idl_c.h
+          grep -Fq 'shared_library("cronet")' \
+            src/components/cronet/BUILD.gn
+          grep -Fq 'cronet_utf8_validator' \
+            src/components/cronet/native/BUILD.gn
+          grep -Fq 'disable_automatic_request_headers' \
+            src/components/cronet/native/cronet.idl
+          grep -Fq 'Cronet_UrlRequestParams_disable_automatic_request_headers_set' \
+            src/components/cronet/native/generated/cronet.idl_c.h
+
+      - name: Prepare Windows toolchain cache
+        shell: bash
+        working-directory: src
+        run: |
+          set -euxo pipefail
+          chmod +x ./get-clang.sh ./get-sysroot.sh ./build.sh
+          EXTRA_FLAGS='target_cpu="x64" enable_websockets=true' bash ./get-clang.sh
+          EXTRA_FLAGS='target_cpu="x86" enable_websockets=true' bash ./get-clang.sh
+          EXTRA_FLAGS='target_cpu="arm64" enable_websockets=true' bash ./get-clang.sh
+          chmod +x ./gn/out/gn.exe \
+            ./third_party/llvm-build/Release+Asserts/bin/clang-cl.exe
+          ./gn/out/gn.exe --version
+          ./third_party/llvm-build/Release+Asserts/bin/clang-cl.exe --version
+
+  macos:
+    name: Build patched TLS Cronet without automatic request headers macOS ${{ matrix.arch }} shared library
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: macos-15-intel
+          - arch: arm64
+            runner: macos-15
+    env:
+      EXTRA_FLAGS: 'target_cpu="${{ matrix.arch }}" enable_websockets=true'
+      TARGET_OS: mac
+      TARGET_CPU: ${{ matrix.arch }}
+      NAIVE_ROOT: ..
+      CHROMIUM_SRC: .
+      OUT_DIR: out/Release
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+
+    steps:
+      - name: Checkout naiveproxy source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install macOS build dependencies
+        run: |
+          set -euxo pipefail
+          brew install ninja ccache
+          pip install setuptools
+          xcode-select -p
+          xcrun --sdk macosx --show-sdk-path
+          ninja --version
+          ccache --version
+
+      - name: Cache macOS toolchain and PGO
+        uses: actions/cache@v4
+        with:
+          path: |
+            src/third_party/llvm-build/Release+Asserts/
+            src/chrome/build/pgo_profiles/chrome-mac-*
+            src/gn/
+          key: cronet-macos-patch-tls-no-automatic-request-headers-toolchain-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION', 'src/DEPS', 'patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch') }}-v1
+
+      - name: Cache macOS compiler output
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: cronet-macos-patch-tls-no-automatic-request-headers-ccache-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION', 'src/DEPS', 'src/build.sh', 'src/components/cronet/BUILD.gn', 'src/components/cronet/native/BUILD.gn', 'patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch') }}-${{ github.run_id }}
+          restore-keys: |
+            cronet-macos-patch-tls-no-automatic-request-headers-ccache-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION', 'src/DEPS', 'src/build.sh', 'src/components/cronet/BUILD.gn', 'src/components/cronet/native/BUILD.gn', 'patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch') }}-
+
+      - name: Apply and verify Chromium 150 TLS Cronet patch without automatic request headers
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euxo pipefail
+          test "$(tr -d '\r\n' < CHROMIUM_VERSION)" = "150.0.7871.63"
+          test -f src/DEPS
+          git apply --check --whitespace=nowarn \
+            patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch
+          git apply --whitespace=nowarn \
+            patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch
+          grep -Fq 'Cronet_WebSocket_Connect' \
+            src/components/cronet/native/include/cronet_websocket_c.h
+          grep -Fq 'GetSocksAuthCredentials' \
+            src/components/cronet/cronet_proxy_delegate.h
+          grep -Fq 'custom_signature_algorithm_prefs' \
+            src/net/ssl/ssl_config_service.h
+          grep -Fq 'SSL_set_custom_extension_order' \
+            src/third_party/boringssl/src/include/openssl/ssl.h
+          grep -Fq 'int SSL_set_custom_extension_order' \
+            src/third_party/boringssl/src/ssl/extensions.cc
+          awk '
+            /BSSL_NAMESPACE_END/ { namespace_depth-- }
+            /int SSL_set_custom_extension_order/ && namespace_depth != 0 {
+              exit 1
+            }
+            /BSSL_NAMESPACE_BEGIN/ { namespace_depth++ }
+          ' src/third_party/boringssl/src/ssl/extensions.cc
+          grep -Fq 'trust_anchor_ids' \
+            src/components/cronet/url_request_context_config.cc
+          grep -Fq 'Cronet_EngineParams_experimental_options_set_with_tls_extensions' \
+            src/components/cronet/native/generated/cronet.idl_c.h
+          grep -Fq 'shared_library("cronet")' \
+            src/components/cronet/BUILD.gn
+          grep -Fq 'cronet_utf8_validator' \
+            src/components/cronet/native/BUILD.gn
+          grep -Fq 'disable_automatic_request_headers' \
+            src/components/cronet/native/cronet.idl
+          grep -Fq 'Cronet_UrlRequestParams_disable_automatic_request_headers_set' \
+            src/components/cronet/native/generated/cronet.idl_c.h
+
+      - name: Verify patched TLS Cronet without automatic request headers macOS target
+        run: |
+          set -euxo pipefail
+          test -f "$NAIVE_ROOT/CHROMIUM_VERSION"
+          test -f "$CHROMIUM_SRC/components/cronet/BUILD.gn"
+          grep -Fq 'shared_library("cronet")' \
+            "$CHROMIUM_SRC/components/cronet/BUILD.gn"
+          grep -Fq 'cronet_utf8_validator' \
+            "$CHROMIUM_SRC/components/cronet/native/BUILD.gn"
+          git -C "$NAIVE_ROOT" rev-parse HEAD
+          printf 'Chromium version: '
+          tr -d '\n' < "$NAIVE_ROOT/CHROMIUM_VERSION"
+          printf '\n'
+
+      - name: Prepare macOS repository toolchain
+        run: |
+          set -euxo pipefail
+          chmod +x ./get-clang.sh ./get-sysroot.sh ./build.sh
+          chmod +x \
+            ./build/toolchain/apple/linker_driver.py \
+            ./build/toolchain/apple/filter_libtool.py \
+            ./build/toolchain/apple/swiftc.py \
+            ./build/toolchain/apple/compile_xcassets.py
+          bash ./get-clang.sh
+          clang_bin=./third_party/llvm-build/Release+Asserts/bin
+
+          link_apple_tool() {
+            local bundled_name="$1"
+            shift
+
+            if [[ -x "$clang_bin/$bundled_name" ]]; then
+              return 0
+            fi
+
+            local candidate
+            local tool_path
+            for candidate in "$@"; do
+              if tool_path="$(xcrun --sdk macosx --find "$candidate" 2>/dev/null)" \
+                && [[ -x "$tool_path" ]]; then
+                ln -sf "$tool_path" "$clang_bin/$bundled_name"
+                return 0
+              fi
+            done
+
+            echo "ERROR: Could not provide $bundled_name in $clang_bin"
+            return 1
+          }
+
+          # Some Chromium macOS LLVM archives omit Apple inspection tools.
+          # The linker driver only needs their compatible system counterparts.
+          link_apple_tool llvm-otool otool
+          link_apple_tool llvm-nm llvm-nm nm
+          link_apple_tool llvm-strip llvm-strip strip
+          link_apple_tool llvm-install-name-tool llvm-install-name-tool install_name_tool
+
+          chmod +x ./gn/out/gn \
+            ./third_party/llvm-build/Release+Asserts/bin/clang \
+            ./third_party/llvm-build/Release+Asserts/bin/clang++
+          test -x ./gn/out/gn
+          test -x ./third_party/llvm-build/Release+Asserts/bin/clang
+          test -x ./third_party/llvm-build/Release+Asserts/bin/clang++
+          test -x ./build/toolchain/apple/linker_driver.py
+          test -x "$clang_bin/llvm-otool"
+          test -x "$clang_bin/llvm-nm"
+          test -x "$clang_bin/llvm-strip"
+          test -x "$clang_bin/llvm-install-name-tool"
+          ./gn/out/gn --version
+          ./third_party/llvm-build/Release+Asserts/bin/clang --version
+
+      - name: Build patched TLS Cronet without automatic request headers macOS shared library
+        run: |
+          set -euxo pipefail
+          ccache -z
+          bash ./build.sh
+          ninja -C "$OUT_DIR" cronet
+          ccache -s
+
+      - name: Package and validate patched TLS Cronet without automatic request headers macOS shared library
+        run: |
+          set -euxo pipefail
+          artifact_dir="$NAIVE_ROOT/cronet-artifact-macos-$TARGET_CPU-patched-tls-no-automatic-request-headers"
+          mkdir -p "$artifact_dir"
+
+          found="$(find "$OUT_DIR" -type f \( \
+            -name 'libcronet.dylib' -o \
+            -name 'cronet.dylib' -o \
+            -name 'libcronet.*.dylib' \
+          \) -print -quit || true)"
+
+          if [[ -z "$found" ]]; then
+            echo 'ERROR: No Cronet macOS shared library was produced.'
+            find "$OUT_DIR" -type f -name '*.dylib' -print | head -200 || true
+            exit 1
+          fi
+
+          echo "Found: $found"
+          cp -L "$found" "$artifact_dir/libcronet.dylib"
+          cp -L "$OUT_DIR/args.gn" "$artifact_dir/args.gn"
+
+          file_output="$(file "$artifact_dir/libcronet.dylib")"
+          echo "$file_output"
+          case "$TARGET_CPU" in
+            x64) expected='x86_64' ;;
+            arm64) expected='arm64' ;;
+            *) echo "Unsupported macOS target CPU: $TARGET_CPU"; exit 1 ;;
+          esac
+          lipo_output="$(lipo -info "$artifact_dir/libcronet.dylib")"
+          echo "$lipo_output"
+          echo "$lipo_output" | grep -Eiq "$expected"
+          shasum -a 256 "$artifact_dir/libcronet.dylib" \
+            | tee "$artifact_dir/SHA256SUMS.txt"
+
+          {
+            echo "naiveproxy revision: $(git -C "$NAIVE_ROOT" rev-parse HEAD)"
+            echo "Chromium version: $(tr -d '\n' < "$NAIVE_ROOT/CHROMIUM_VERSION")"
+            echo "Target OS: macos"
+            echo "Target CPU: $TARGET_CPU"
+            echo "Runner OS: ${RUNNER_OS:-unknown}"
+            echo "Runner label: ${{ matrix.runner }}"
+            echo "GN target: //components/cronet:cronet"
+            echo "Patch: patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch"
+            echo "Source library: $found"
+            echo "Build mode: shared library"
+            echo "Build command: EXTRA_FLAGS=$EXTRA_FLAGS bash ./build.sh && ninja -C out/Release cronet"
+          } > "$artifact_dir/build-info.txt"
+
+      - name: Upload patched TLS Cronet without automatic request headers macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cronet-macos-${{ matrix.arch }}-patched-tls-no-automatic-request-headers
+          path: cronet-artifact-macos-${{ matrix.arch }}-patched-tls-no-automatic-request-headers
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  linux:
+    needs: cache-toolchains-posix
+    name: Build patched TLS Cronet without automatic request headers Linux ${{ matrix.arch }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, x86, arm64, arm, mipsel, mips64el, riscv64, loong64]
+    env:
+      EXTRA_FLAGS: 'target_cpu="${{ matrix.arch }}" enable_websockets=true'
+      TARGET_OS: linux
+      TARGET_CPU: ${{ matrix.arch }}
+      NAIVE_ROOT: ..
+      CHROMIUM_SRC: .
+      OUT_DIR: out/Release
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+
+    steps:
+      - name: Checkout naiveproxy source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Linux build dependencies
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils \
+            build-essential \
+            ca-certificates \
+            ccache \
+            bubblewrap \
+            curl \
+            file \
+            git \
+            git-lfs \
+            gnupg \
+            gpgv \
+            lsb-release \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-requests \
+            rsync \
+            unzip \
+            xz-utils \
+            zip
+
+      - name: Apply and verify Chromium 150 TLS Cronet patch without automatic request headers
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euxo pipefail
+          test "$(tr -d '\r\n' < CHROMIUM_VERSION)" = "150.0.7871.63"
+          test -f src/DEPS
+          git apply --check --whitespace=nowarn \
+            patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch
+          git apply --whitespace=nowarn \
+            patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch
+          grep -Fq 'Cronet_WebSocket_Connect' \
+            src/components/cronet/native/include/cronet_websocket_c.h
+          grep -Fq 'GetSocksAuthCredentials' \
+            src/components/cronet/cronet_proxy_delegate.h
+          grep -Fq 'custom_signature_algorithm_prefs' \
+            src/net/ssl/ssl_config_service.h
+          grep -Fq 'SSL_set_custom_extension_order' \
+            src/third_party/boringssl/src/include/openssl/ssl.h
+          grep -Fq 'int SSL_set_custom_extension_order' \
+            src/third_party/boringssl/src/ssl/extensions.cc
+          awk '
+            /BSSL_NAMESPACE_END/ { namespace_depth-- }
+            /int SSL_set_custom_extension_order/ && namespace_depth != 0 {
+              exit 1
+            }
+            /BSSL_NAMESPACE_BEGIN/ { namespace_depth++ }
+          ' src/third_party/boringssl/src/ssl/extensions.cc
+          grep -Fq 'trust_anchor_ids' \
+            src/components/cronet/url_request_context_config.cc
+          grep -Fq 'Cronet_EngineParams_experimental_options_set_with_tls_extensions' \
+            src/components/cronet/native/generated/cronet.idl_c.h
+          grep -Fq 'shared_library("cronet")' \
+            src/components/cronet/BUILD.gn
+          grep -Fq 'cronet_utf8_validator' \
+            src/components/cronet/native/BUILD.gn
+          grep -Fq 'disable_automatic_request_headers' \
+            src/components/cronet/native/cronet.idl
+          grep -Fq 'Cronet_UrlRequestParams_disable_automatic_request_headers_set' \
+            src/components/cronet/native/generated/cronet.idl_c.h
+
+      - name: Verify patched TLS Cronet without automatic request headers targets
+        run: |
+          set -euxo pipefail
+          test -f "$NAIVE_ROOT/CHROMIUM_VERSION"
+          test -f "$CHROMIUM_SRC/components/cronet/BUILD.gn"
+          grep -Fq 'shared_library("cronet")' \
+            "$CHROMIUM_SRC/components/cronet/BUILD.gn"
+          grep -Fq 'cronet_utf8_validator' \
+            "$CHROMIUM_SRC/components/cronet/native/BUILD.gn"
+          git -C "$NAIVE_ROOT" rev-parse HEAD
+          printf 'Chromium version: '
+          tr -d '\n' < "$NAIVE_ROOT/CHROMIUM_VERSION"
+          printf '\n'
+
+      - name: Cache Linux toolchain and host tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            src/third_party/llvm-build/Release+Asserts/
+            src/gn/
+            src/chrome/build/pgo_profiles/
+            src/.host_tool_cache/
+            src/qemu-user*.deb
+          key: cronet-posix-toolchain-patch-tls-no-automatic-request-headers-${{ hashFiles('CHROMIUM_VERSION', 'src/DEPS', 'patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch') }}-v1
+
+      - name: Cache Linux sysroot
+        uses: actions/cache@v4
+        with:
+          path: src/out/sysroot-build/
+          key: cronet-linux-sysroot-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION', 'src/build/linux/sysroot_scripts/sysroot_creator.py') }}-v2
+
+      - id: ccache-timestamp
+        name: Create ccache cache key
+        run: echo "CCACHE_TIMESTAMP=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Linux compiler output
+        uses: actions/cache@v4
+        with:
+          path: .ccache/
+          key: cronet-linux-patch-tls-no-automatic-request-headers-ccache-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION', 'src/DEPS', 'src/build.sh', 'src/components/cronet/BUILD.gn', 'src/components/cronet/native/BUILD.gn', 'patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch') }}-${{ steps.ccache-timestamp.outputs.CCACHE_TIMESTAMP }}
+          restore-keys: |
+            cronet-linux-patch-tls-no-automatic-request-headers-ccache-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION', 'src/DEPS', 'src/build.sh', 'src/components/cronet/BUILD.gn', 'src/components/cronet/native/BUILD.gn', 'patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch') }}-
+
+      - name: Download qemu-user helper for cross builds
+        run: |
+          set -euxo pipefail
+          if ! compgen -G 'qemu-user*.deb' > /dev/null; then
+            curl -fL \
+              -o qemu-user_9.2.2+ds-1+b2_amd64.deb \
+              https://snapshot.debian.org/archive/debian/20250405T083429Z/pool/main/q/qemu/qemu-user_9.2.2%2Bds-1%2Bb2_amd64.deb
+          fi
+
+          test -n "$(find . -maxdepth 1 -type f -name 'qemu-user*.deb' -print -quit)"
+
+      - name: Install cross-build helpers
+        run: |
+          set -euxo pipefail
+          sudo apt-get remove -y qemu-user-binfmt || true
+          sudo dpkg -i qemu-user*.deb
+          sudo apt-get remove -y libc6-i386 || true
+
+      - name: Prepare Linux repository toolchain
+        run: |
+          set -euxo pipefail
+          chmod +x ./get-clang.sh ./get-sysroot.sh ./build.sh \
+            ./build/linux/sysroot_scripts/generate_keyring.sh \
+            ./build/linux/sysroot_scripts/sysroot_creator.py
+          rm -f ./build/linux/sysroot_scripts/keyring.gpg
+          GPG_TTY=/dev/null \
+            bash ./build/linux/sysroot_scripts/generate_keyring.sh
+          bash ./get-clang.sh
+          chmod +x ./gn/out/gn
+          test -x ./gn/out/gn
+          test -x ./third_party/llvm-build/Release+Asserts/bin/clang
+
+      - name: Build patched TLS Cronet without automatic request headers Linux shared library
+        run: |
+          set -euxo pipefail
+          ccache -z
+          bash ./build.sh
+          ninja -C "$OUT_DIR" cronet
+          ccache -s
+
+      - name: Package and validate patched TLS Cronet without automatic request headers Linux library
+        run: |
+          set -euxo pipefail
+          artifact_dir="$NAIVE_ROOT/cronet-artifact"
+          mkdir -p "$artifact_dir"
+
+          found="$(find "$OUT_DIR" -type f \( \
+            -name 'libcronet.so' -o \
+            -name 'libcronet.*.so' -o \
+            -name 'cronet.*.so' \
+          \) -print -quit || true)"
+
+          if [[ -z "$found" ]]; then
+            echo 'ERROR: No Cronet Linux shared library was produced.'
+            find "$OUT_DIR" -type f -name '*.so' -print | head -200 || true
+            exit 1
+          fi
+
+          case "$TARGET_CPU" in
+            x64) expected='ELF 64-bit.*x86-64' ;;
+            x86) expected='ELF 32-bit.*(80386|Intel 80386)' ;;
+            arm64) expected='ELF 64-bit.*(ARM aarch64|AArch64)' ;;
+            arm) expected='ELF 32-bit.*ARM' ;;
+            mipsel) expected='ELF 32-bit.*MIPS' ;;
+            mips64el) expected='ELF 64-bit.*MIPS' ;;
+            riscv64) expected='ELF 64-bit.*RISC-V' ;;
+            loong64) expected='ELF 64-bit.*LoongArch' ;;
+            *) echo "Unsupported Linux target CPU: $TARGET_CPU"; exit 1 ;;
+          esac
+
+          echo "Found: $found"
+          cp -L "$found" "$artifact_dir/libcronet.so"
+          cp -L "$OUT_DIR/args.gn" "$artifact_dir/args.gn"
+
+          file_output="$(file "$artifact_dir/libcronet.so")"
+          echo "$file_output"
+          echo "$file_output" | grep -Eiq "$expected"
+          readelf -h "$artifact_dir/libcronet.so"
+          sha256sum "$artifact_dir/libcronet.so" \
+            | tee "$artifact_dir/SHA256SUMS.txt"
+
+          {
+            echo "naiveproxy revision: $(git -C "$NAIVE_ROOT" rev-parse HEAD)"
+            echo "Chromium version: $(tr -d '\r\n' < "$NAIVE_ROOT/CHROMIUM_VERSION")"
+            echo "Target OS: linux"
+            echo "Target CPU: $TARGET_CPU"
+            echo "Runner: ubuntu-22.04"
+            echo "GN target: //components/cronet:cronet"
+            echo "Patch: patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch"
+            echo "Source library: $found"
+            echo "Build command: EXTRA_FLAGS=$EXTRA_FLAGS bash ./build.sh && ninja -C out/Release cronet"
+          } > "$artifact_dir/build-info.txt"
+
+      - name: Upload patched TLS Cronet without automatic request headers Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cronet-linux-${{ matrix.arch }}-patched-tls-no-automatic-request-headers
+          path: cronet-artifact
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  openwrt:
+    needs: cache-toolchains-posix
+    name: Build patched TLS Cronet without automatic request headers OpenWrt ${{ matrix.arch }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            openwrt: "target=x86 subtarget=64"
+            target_cpu: x64
+          - arch: x86
+            openwrt: "target=x86 subtarget=geode"
+            target_cpu: x86
+          - arch: aarch64_cortex-a53
+            openwrt: "target=sunxi subtarget=cortexa53"
+            target_cpu: arm64
+            extra: 'arm_cpu="cortex-a53"'
+          - arch: aarch64_cortex-a53-static
+            openwrt: "target=sunxi subtarget=cortexa53"
+            target_cpu: arm64
+            # Cronet is linked as libcronet.so; static musl libc is not PIC.
+            extra: 'arm_cpu="cortex-a53" build_static=false use_allocator_shim=false use_partition_alloc=false'
+            openwrt_release: '24.10.0'
+            openwrt_gcc_ver: '13.3.0'
+          - arch: aarch64_cortex-a72
+            openwrt: "target=mvebu subtarget=cortexa72"
+            target_cpu: arm64
+            extra: 'arm_cpu="cortex-a72"'
+          - arch: aarch64_cortex-a72-static
+            openwrt: "target=mvebu subtarget=cortexa72"
+            target_cpu: arm64
+            extra: 'arm_cpu="cortex-a72" build_static=false use_allocator_shim=false use_partition_alloc=false'
+            openwrt_release: '24.10.0'
+            openwrt_gcc_ver: '13.3.0'
+          - arch: aarch64_cortex-a76
+            openwrt: "target=bcm27xx subtarget=bcm2712"
+            target_cpu: arm64
+            extra: 'arm_cpu="cortex-a76"'
+            openwrt_release: '24.10.0'
+            openwrt_gcc_ver: '13.3.0'
+          - arch: aarch64_generic
+            openwrt: "target=layerscape subtarget=armv8_64b"
+            target_cpu: arm64
+          - arch: aarch64_generic-static
+            openwrt: "target=layerscape subtarget=armv8_64b"
+            target_cpu: arm64
+            extra: "build_static=false use_allocator_shim=false use_partition_alloc=false"
+            openwrt_release: '24.10.0'
+            openwrt_gcc_ver: '13.3.0'
+          - arch: arm_arm1176jzf-s_vfp
+            openwrt: "target=brcm2708 subtarget=bcm2708"
+            target_cpu: arm
+            extra: 'arm_version=0 arm_cpu="arm1176jzf-s" arm_fpu="vfp" arm_float_abi="hard" arm_use_neon=false arm_use_thumb=false'
+          - arch: arm_arm926ej-s
+            openwrt: "target=mxs subtarget=generic"
+            target_cpu: arm
+            extra: 'arm_version=0 arm_cpu="arm926ej-s" arm_float_abi="soft" arm_use_neon=false arm_use_thumb=false'
+          - arch: arm_cortex-a15_neon-vfpv4
+            openwrt: "target=ipq806x subtarget=generic"
+            target_cpu: arm
+            extra: 'arm_version=0 arm_cpu="cortex-a15" arm_fpu="neon-vfpv4" arm_float_abi="hard" arm_use_neon=true'
+          - arch: arm_cortex-a5_vfpv4
+            openwrt: "target=at91 subtarget=sama5d3"
+            target_cpu: arm
+            extra: 'arm_version=0 arm_cpu="cortex-a5" arm_fpu="vfpv4" arm_float_abi="hard" arm_use_neon=false'
+          - arch: arm_cortex-a7
+            openwrt: "target=mediatek subtarget=mt7629"
+            target_cpu: arm
+            extra: 'arm_version=0 arm_cpu="cortex-a7" arm_float_abi="soft" arm_use_neon=false'
+            openwrt_release: '21.02.0'
+            openwrt_gcc_ver: '8.4.0'
+          - arch: arm_cortex-a7_neon-vfpv4
+            openwrt: "target=sunxi subtarget=cortexa7"
+            target_cpu: arm
+            extra: 'arm_version=0 arm_cpu="cortex-a7" arm_fpu="neon-vfpv4" arm_float_abi="hard" arm_use_neon=true'
+          - arch: arm_cortex-a7_neon-vfpv4-static
+            openwrt: "target=sunxi subtarget=cortexa7"
+            target_cpu: arm
+            extra: 'arm_version=0 arm_cpu="cortex-a7" arm_fpu="neon-vfpv4" arm_float_abi="hard" arm_use_neon=true build_static=false use_allocator_shim=false use_partition_alloc=false'
+            openwrt_release: '24.10.0'
+            openwrt_gcc_ver: '13.3.0'
+          - arch: arm_cortex-a7_vfpv4
+            openwrt: "target=at91 subtarget=sama7"
+            target_cpu: arm
+            extra: 'arm_version=0 arm_cpu="cortex-a7" arm_fpu="vfpv4" arm_float_abi="hard" arm_use_neon=false'
+            openwrt_release: '22.03.0'
+            openwrt_gcc_ver: '11.2.0'
+          - arch: arm_cortex-a8_vfpv3
+            openwrt: "target=sunxi subtarget=cortexa8"
+            target_cpu: arm
+            extra: 'arm_version=0 arm_cpu="cortex-a8" arm_fpu="vfpv3" arm_float_abi="hard" arm_use_neon=false'
+          - arch: arm_cortex-a9
+            openwrt: "target=bcm53xx subtarget=generic"
+            target_cpu: arm
+            extra: 'arm_version=0 arm_cpu="cortex-a9" arm_float_abi="soft" arm_use_neon=false'
+          - arch: arm_cortex-a9-static
+            openwrt: "target=bcm53xx subtarget=generic"
+            target_cpu: arm
+            extra: 'arm_version=0 arm_cpu="cortex-a9" arm_float_abi="soft" arm_use_neon=false build_static=false use_allocator_shim=false use_partition_alloc=false'
+            openwrt_release: '24.10.0'
+            openwrt_gcc_ver: '13.3.0'
+          - arch: arm_cortex-a9_neon
+            openwrt: "target=imx6 subtarget=generic"
+            target_cpu: arm
+            extra: 'arm_version=0 arm_cpu="cortex-a9" arm_fpu="neon" arm_float_abi="hard" arm_use_neon=true'
+          - arch: arm_cortex-a9_vfpv3-d16
+            openwrt: "target=mvebu subtarget=cortexa9"
+            target_cpu: arm
+            extra: 'arm_version=0 arm_cpu="cortex-a9" arm_fpu="vfpv3-d16" arm_float_abi="hard" arm_use_neon=false'
+          - arch: arm_mpcore
+            openwrt: "target=oxnas subtarget=ox820"
+            target_cpu: arm
+            extra: 'arm_version=0 arm_cpu="mpcore" arm_float_abi="soft" arm_use_neon=false arm_use_thumb=false'
+          - arch: arm_xscale
+            openwrt: "target=kirkwood subtarget=generic"
+            target_cpu: arm
+            extra: 'arm_version=0 arm_cpu="xscale" arm_float_abi="soft" arm_use_neon=false arm_use_thumb=false'
+          - arch: mipsel_24kc
+            openwrt: "target=ramips subtarget=rt305x"
+            target_cpu: mipsel
+            extra: 'mips_arch_variant="r2" mips_float_abi="soft"'
+          - arch: mipsel_24kc-static
+            openwrt: "target=ramips subtarget=rt305x"
+            target_cpu: mipsel
+            extra: 'mips_arch_variant="r2" mips_float_abi="soft" build_static=false use_allocator_shim=false use_partition_alloc=false'
+            openwrt_release: '24.10.0'
+            openwrt_gcc_ver: '13.3.0'
+          - arch: mipsel_mips32
+            openwrt: "target=brcm47xx subtarget=legacy"
+            target_cpu: mipsel
+            extra: 'mips_arch_variant="r1" mips_float_abi="soft"'
+          - arch: riscv64
+            openwrt: "target=sifiveu subtarget=generic"
+            target_cpu: riscv64
+            openwrt_release: '23.05.0'
+            openwrt_gcc_ver: '12.3.0'
+          - arch: loongarch64
+            openwrt: "target=loongarch64 subtarget=generic"
+            target_cpu: loong64
+            openwrt_release: '24.10.0'
+            openwrt_gcc_ver: '13.3.0'
+    env:
+      EXTRA_FLAGS: target_cpu="${{ matrix.target_cpu }}" target_os="openwrt" enable_websockets=true ${{ matrix.extra }}
+      OPENWRT_FLAGS: arch=${{ matrix.arch }} release=${{ matrix.openwrt_release || '18.06.0' }} gcc_ver=${{ matrix.openwrt_gcc_ver || '7.3.0' }} ${{ matrix.openwrt }}
+      TARGET_OS: openwrt
+      TARGET_CPU: ${{ matrix.target_cpu }}
+      TARGET_ARCH: ${{ matrix.arch }}
+      NAIVE_ROOT: ..
+      CHROMIUM_SRC: .
+      OUT_DIR: out/Release
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+
+    steps:
+      - name: Checkout naiveproxy source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install OpenWrt build dependencies
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils \
+            build-essential \
+            bubblewrap \
+            ca-certificates \
+            ccache \
+            curl \
+            file \
+            git \
+            git-lfs \
+            gnupg \
+            gpgv \
+            lsb-release \
+            ninja-build \
+            pkg-config \
+            python3 \
+            python3-requests \
+            rsync \
+            unzip \
+            xz-utils \
+            zip
+
+      - name: Apply and verify Chromium 150 TLS Cronet patch without automatic request headers
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euxo pipefail
+          test "$(tr -d '\r\n' < CHROMIUM_VERSION)" = "150.0.7871.63"
+          test -f src/DEPS
+          git apply --check --whitespace=nowarn \
+            patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch
+          git apply --whitespace=nowarn \
+            patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch
+          grep -Fq 'Cronet_WebSocket_Connect' \
+            src/components/cronet/native/include/cronet_websocket_c.h
+          grep -Fq 'GetSocksAuthCredentials' \
+            src/components/cronet/cronet_proxy_delegate.h
+          grep -Fq 'custom_signature_algorithm_prefs' \
+            src/net/ssl/ssl_config_service.h
+          grep -Fq 'SSL_set_custom_extension_order' \
+            src/third_party/boringssl/src/include/openssl/ssl.h
+          grep -Fq 'int SSL_set_custom_extension_order' \
+            src/third_party/boringssl/src/ssl/extensions.cc
+          awk '
+            /BSSL_NAMESPACE_END/ { namespace_depth-- }
+            /int SSL_set_custom_extension_order/ && namespace_depth != 0 {
+              exit 1
+            }
+            /BSSL_NAMESPACE_BEGIN/ { namespace_depth++ }
+          ' src/third_party/boringssl/src/ssl/extensions.cc
+          grep -Fq 'trust_anchor_ids' \
+            src/components/cronet/url_request_context_config.cc
+          grep -Fq 'Cronet_EngineParams_experimental_options_set_with_tls_extensions' \
+            src/components/cronet/native/generated/cronet.idl_c.h
+          grep -Fq 'shared_library("cronet")' \
+            src/components/cronet/BUILD.gn
+          grep -Fq 'cronet_utf8_validator' \
+            src/components/cronet/native/BUILD.gn
+          grep -Fq 'disable_automatic_request_headers' \
+            src/components/cronet/native/cronet.idl
+          grep -Fq 'Cronet_UrlRequestParams_disable_automatic_request_headers_set' \
+            src/components/cronet/native/generated/cronet.idl_c.h
+
+      - name: Verify patched TLS Cronet without automatic request headers targets
+        run: |
+          set -euxo pipefail
+          test -f "$NAIVE_ROOT/CHROMIUM_VERSION"
+          test -f "$CHROMIUM_SRC/components/cronet/BUILD.gn"
+          grep -Fq 'shared_library("cronet")' \
+            "$CHROMIUM_SRC/components/cronet/BUILD.gn"
+          grep -Fq 'cronet_utf8_validator' \
+            "$CHROMIUM_SRC/components/cronet/native/BUILD.gn"
+          git -C "$NAIVE_ROOT" rev-parse HEAD
+          printf 'Chromium version: '
+          tr -d '\n' < "$NAIVE_ROOT/CHROMIUM_VERSION"
+          printf '\n'
+
+      - name: Verify shared-library linker mode for static-named targets
+        if: contains(matrix.arch, '-static')
+        run: |
+          set -euxo pipefail
+          grep -Fq 'build_static=false' <<< "$EXTRA_FLAGS"
+          ! grep -Fq 'build_static=true' <<< "$EXTRA_FLAGS"
+
+      - name: Cache OpenWrt toolchain and host tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            src/third_party/llvm-build/Release+Asserts/
+            src/gn/
+            src/chrome/build/pgo_profiles/
+            src/.host_tool_cache/
+            src/qemu-user*.deb
+          key: cronet-posix-toolchain-patch-tls-no-automatic-request-headers-${{ hashFiles('CHROMIUM_VERSION', 'src/DEPS', 'patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch') }}-v1
+
+      - name: Cache OpenWrt sysroot
+        uses: actions/cache@v4
+        with:
+          path: src/out/sysroot-build/openwrt/
+          key: cronet-openwrt-sysroot-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION', 'src/get-openwrt.sh') }}-v2
+
+      - id: ccache-timestamp
+        name: Create ccache cache key
+        run: echo "CCACHE_TIMESTAMP=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache OpenWrt compiler output
+        uses: actions/cache@v4
+        with:
+          path: .ccache/
+          key: cronet-openwrt-patch-tls-no-automatic-request-headers-ccache-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION', 'src/DEPS', 'src/build.sh', 'src/components/cronet/BUILD.gn', 'src/components/cronet/native/BUILD.gn', 'patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch') }}-${{ steps.ccache-timestamp.outputs.CCACHE_TIMESTAMP }}
+          restore-keys: |
+            cronet-openwrt-patch-tls-no-automatic-request-headers-ccache-${{ matrix.arch }}-${{ hashFiles('CHROMIUM_VERSION', 'src/DEPS', 'src/build.sh', 'src/components/cronet/BUILD.gn', 'src/components/cronet/native/BUILD.gn', 'patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch') }}-
+
+      - name: Download qemu-user helper for OpenWrt builds
+        run: |
+          set -euxo pipefail
+          if ! compgen -G 'qemu-user*.deb' > /dev/null; then
+            curl -fL \
+              -o qemu-user_9.2.2+ds-1+b2_amd64.deb \
+              https://snapshot.debian.org/archive/debian/20250405T083429Z/pool/main/q/qemu/qemu-user_9.2.2%2Bds-1%2Bb2_amd64.deb
+          fi
+
+          test -n "$(find . -maxdepth 1 -type f -name 'qemu-user*.deb' -print -quit)"
+
+      - name: Install cross-build helpers
+        run: |
+          set -euxo pipefail
+          sudo apt-get remove -y qemu-user-binfmt || true
+          sudo dpkg -i qemu-user*.deb
+          sudo apt-get remove -y libc6-i386 || true
+
+      - name: Prepare OpenWrt repository toolchain
+        run: |
+          set -euxo pipefail
+          chmod +x ./get-clang.sh ./get-sysroot.sh ./get-openwrt.sh ./build.sh
+          bash ./get-clang.sh
+          chmod +x ./gn/out/gn
+          test -x ./gn/out/gn
+          test -x ./third_party/llvm-build/Release+Asserts/bin/clang
+
+      - name: Build patched TLS Cronet without automatic request headers OpenWrt shared library
+        run: |
+          set -euxo pipefail
+          ccache -z
+          bash ./build.sh
+          ninja -C "$OUT_DIR" cronet
+          ccache -s
+
+      - name: Package and validate patched TLS Cronet without automatic request headers OpenWrt library
+        run: |
+          set -euxo pipefail
+          artifact_dir="$NAIVE_ROOT/cronet-artifact"
+          mkdir -p "$artifact_dir"
+
+          found="$(find "$OUT_DIR" -type f \( \
+            -name 'libcronet.so' -o \
+            -name 'libcronet.*.so' -o \
+            -name 'cronet.*.so' \
+          \) -print -quit || true)"
+
+          if [[ -z "$found" ]]; then
+            echo 'ERROR: No Cronet OpenWrt shared library was produced.'
+            find "$OUT_DIR" -type f -name '*.so' -print | head -200 || true
+            exit 1
+          fi
+
+          case "$TARGET_CPU" in
+            x64) expected='ELF 64-bit.*x86-64' ;;
+            x86) expected='ELF 32-bit.*(80386|Intel 80386)' ;;
+            arm64) expected='ELF 64-bit.*(ARM aarch64|AArch64)' ;;
+            arm) expected='ELF 32-bit.*ARM' ;;
+            mipsel) expected='ELF 32-bit.*MIPS' ;;
+            riscv64) expected='ELF 64-bit.*RISC-V' ;;
+            loong64) expected='ELF 64-bit.*LoongArch' ;;
+            *) echo "Unsupported OpenWrt target CPU: $TARGET_CPU"; exit 1 ;;
+          esac
+
+          echo "Found: $found"
+          cp -L "$found" "$artifact_dir/libcronet.so"
+          cp -L "$OUT_DIR/args.gn" "$artifact_dir/args.gn"
+
+          file_output="$(file "$artifact_dir/libcronet.so")"
+          echo "$file_output"
+          echo "$file_output" | grep -Eiq "$expected"
+          readelf -h "$artifact_dir/libcronet.so"
+          sha256sum "$artifact_dir/libcronet.so" \
+            | tee "$artifact_dir/SHA256SUMS.txt"
+
+          {
+            echo "naiveproxy revision: $(git -C "$NAIVE_ROOT" rev-parse HEAD)"
+            echo "Chromium version: $(tr -d '\r\n' < "$NAIVE_ROOT/CHROMIUM_VERSION")"
+            echo "Target OS: $TARGET_OS"
+            echo "Target CPU: $TARGET_CPU"
+            echo "OpenWrt arch: $TARGET_ARCH"
+            echo "OpenWrt flags: $OPENWRT_FLAGS"
+            echo "Runner: ubuntu-22.04"
+            echo "GN target: //components/cronet:cronet"
+            echo "Patch: patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch"
+            echo "Source library: $found"
+            echo "Build command: EXTRA_FLAGS=$EXTRA_FLAGS OPENWRT_FLAGS=$OPENWRT_FLAGS bash ./build.sh && ninja -C out/Release cronet"
+          } > "$artifact_dir/build-info.txt"
+
+      - name: Upload patched TLS Cronet without automatic request headers OpenWrt artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cronet-openwrt-${{ matrix.arch }}-patched-tls-no-automatic-request-headers
+          path: cronet-artifact
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  windows:
+    needs: cache-toolchains-win
+    name: Build patched TLS Cronet without automatic request headers Windows ${{ matrix.arch }}
+    runs-on: windows-2022
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, x86, arm64]
+    env:
+      EXTRA_FLAGS: 'target_cpu="${{ matrix.arch }}" enable_websockets=true'
+      TARGET_OS: win
+      TARGET_CPU: ${{ matrix.arch }}
+      NAIVE_ROOT: ..
+      CHROMIUM_SRC: .
+      OUT_DIR: out/Release
+
+    steps:
+      - name: Checkout naiveproxy source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Cache Windows toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            src/third_party/llvm-build/Release+Asserts/
+            src/gn/
+            src/chrome/build/pgo_profiles/
+            ~/.cargo/bin/
+            ~/bin/ninja.exe
+          key: cronet-windows-toolchain-patch-tls-no-automatic-request-headers-${{ hashFiles('CHROMIUM_VERSION', 'src/DEPS', 'patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch') }}-v1
+
+      - name: Install Windows Ninja
+        run: |
+          set -euxo pipefail
+          mkdir -p "$HOME/bin"
+          if [[ ! -f "$HOME/bin/ninja.exe" ]]; then
+            curl -fsSL \
+              -o "$HOME/bin/ninja-win.zip" \
+              https://github.com/ninja-build/ninja/releases/download/v1.10.2/ninja-win.zip
+            unzip -o "$HOME/bin/ninja-win.zip" -d "$HOME/bin"
+          fi
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/bin:$PATH"
+          ninja.exe --version
+
+      - name: Apply and verify Chromium 150 TLS Cronet patch without automatic request headers
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euxo pipefail
+          test "$(tr -d '\r\n' < CHROMIUM_VERSION)" = "150.0.7871.63"
+          test -f src/DEPS
+          patch_file="patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch"
+          normalized_patch="$PWD/.cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.lf.patch"
+          tr -d '\r' < "$patch_file" > "$normalized_patch"
+          test -s "$normalized_patch"
+          git apply --check --whitespace=nowarn "$normalized_patch"
+          git apply --whitespace=nowarn "$normalized_patch"
+          rm -f "$normalized_patch"
+          grep -Fq 'Cronet_WebSocket_Connect' \
+            src/components/cronet/native/include/cronet_websocket_c.h
+          grep -Fq 'GetSocksAuthCredentials' \
+            src/components/cronet/cronet_proxy_delegate.h
+          grep -Fq 'custom_signature_algorithm_prefs' \
+            src/net/ssl/ssl_config_service.h
+          grep -Fq 'SSL_set_custom_extension_order' \
+            src/third_party/boringssl/src/include/openssl/ssl.h
+          grep -Fq 'int SSL_set_custom_extension_order' \
+            src/third_party/boringssl/src/ssl/extensions.cc
+          awk '
+            /BSSL_NAMESPACE_END/ { namespace_depth-- }
+            /int SSL_set_custom_extension_order/ && namespace_depth != 0 {
+              exit 1
+            }
+            /BSSL_NAMESPACE_BEGIN/ { namespace_depth++ }
+          ' src/third_party/boringssl/src/ssl/extensions.cc
+          grep -Fq 'trust_anchor_ids' \
+            src/components/cronet/url_request_context_config.cc
+          grep -Fq 'Cronet_EngineParams_experimental_options_set_with_tls_extensions' \
+            src/components/cronet/native/generated/cronet.idl_c.h
+          grep -Fq 'shared_library("cronet")' \
+            src/components/cronet/BUILD.gn
+          grep -Fq 'cronet_utf8_validator' \
+            src/components/cronet/native/BUILD.gn
+          grep -Fq 'disable_automatic_request_headers' \
+            src/components/cronet/native/cronet.idl
+          grep -Fq 'Cronet_UrlRequestParams_disable_automatic_request_headers_set' \
+            src/components/cronet/native/generated/cronet.idl_c.h
+
+      - name: Verify patched TLS Cronet without automatic request headers targets
+        run: |
+          set -euxo pipefail
+          test -f "$NAIVE_ROOT/CHROMIUM_VERSION"
+          test -f "$CHROMIUM_SRC/components/cronet/BUILD.gn"
+          grep -Fq 'shared_library("cronet")' \
+            "$CHROMIUM_SRC/components/cronet/BUILD.gn"
+          grep -Fq 'cronet_utf8_validator' \
+            "$CHROMIUM_SRC/components/cronet/native/BUILD.gn"
+          git -C "$NAIVE_ROOT" rev-parse HEAD
+          printf 'Chromium version: '
+          tr -d '\n' < "$NAIVE_ROOT/CHROMIUM_VERSION"
+          printf '\n'
+
+      - name: Prepare Windows repository toolchain
+        run: |
+          set -euxo pipefail
+          chmod +x ./get-clang.sh ./get-sysroot.sh ./build.sh
+          bash ./get-clang.sh
+          chmod +x ./gn/out/gn.exe \
+            ./third_party/llvm-build/Release+Asserts/bin/clang-cl.exe
+          test -f ./gn/out/gn.exe
+          test -f ./third_party/llvm-build/Release+Asserts/bin/clang-cl.exe
+          ./gn/out/gn.exe --version
+          ./third_party/llvm-build/Release+Asserts/bin/clang-cl.exe --version
+          test -f "$HOME/.cargo/bin/sccache.exe"
+
+      - name: Build patched TLS Cronet without automatic request headers Windows shared library
+        run: |
+          set -euxo pipefail
+          export PATH="$HOME/bin:$PATH"
+          "$HOME/.cargo/bin/sccache.exe" -z
+          bash ./build.sh
+          ninja.exe -C "$OUT_DIR" cronet
+          "$HOME/.cargo/bin/sccache.exe" -s
+
+      - name: Package and validate patched TLS Cronet without automatic request headers Windows library
+        run: |
+          set -euxo pipefail
+          artifact_dir="$NAIVE_ROOT/cronet-artifact-windows-${TARGET_CPU}-patched-tls-no-automatic-request-headers"
+          mkdir -p "$artifact_dir"
+
+          found="$(find "$OUT_DIR" -type f \( \
+            -iname 'cronet.dll' -o \
+            -iname 'libcronet.dll' -o \
+            -iname 'cronet.*.dll' \
+          \) -print -quit || true)"
+
+          if [[ -z "$found" ]]; then
+            echo 'ERROR: No Cronet Windows DLL was produced.'
+            find "$OUT_DIR" -type f -iname '*.dll' -print | head -200 || true
+            exit 1
+          fi
+
+          case "$TARGET_CPU" in
+            x64) expected='PE32\+.*x86-64' ;;
+            x86) expected='PE32.*(80386|i386|Intel 80386|Intel i386)' ;;
+            arm64) expected='PE32\+.*(Aarch64|ARM64)' ;;
+            *) echo "Unsupported Windows target CPU: $TARGET_CPU"; exit 1 ;;
+          esac
+
+          echo "Found: $found"
+          cp -L "$found" "$artifact_dir/cronet.dll"
+          cp -L "$OUT_DIR/args.gn" "$artifact_dir/args.gn"
+
+          file_output="$(file "$artifact_dir/cronet.dll")"
+          echo "$file_output"
+          echo "$file_output" | grep -Eiq "$expected"
+          sha256sum "$artifact_dir/cronet.dll" \
+            | tee "$artifact_dir/SHA256SUMS.txt"
+
+          {
+            echo "naiveproxy revision: $(git -C "$NAIVE_ROOT" rev-parse HEAD)"
+            echo "Chromium version: $(tr -d '\r\n' < "$NAIVE_ROOT/CHROMIUM_VERSION")"
+            echo "Target OS: windows"
+            echo "Target CPU: $TARGET_CPU"
+            echo "Runner: windows-2022"
+            echo "GN target: //components/cronet:cronet"
+            echo "Patch: patches/cronet/cronet-v150-tls-order-trust-anchor-no-automatic-request-headers.patch"
+            echo "Source library: $found"
+            echo "Build command: EXTRA_FLAGS=$EXTRA_FLAGS bash ./build.sh && ninja.exe -C out/Release cronet"
+          } > "$artifact_dir/build-info.txt"
+
+      - name: Upload patched TLS Cronet without automatic request headers Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cronet-windows-${{ matrix.arch }}-patched-tls-no-automatic-request-headers
+          path: cronet-artifact-windows-${{ matrix.arch }}-patched-tls-no-automatic-request-headers
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+
