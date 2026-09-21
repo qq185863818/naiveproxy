@@ -113,6 +113,31 @@ jobs:
           chmod +x ./get-clang.sh ./get-sysroot.sh ./build.sh \
             ./build/linux/sysroot_scripts/generate_keyring.sh \
             ./build/linux/sysroot_scripts/sysroot_creator.py
+          export GNUPGHOME="${RUNNER_TEMP}/gnupg"
+          mkdir -p "$GNUPGHOME"
+          chmod 700 "$GNUPGHOME"
+          gpg() {
+            local -a args
+            local server
+            local i
+            for server in \
+              "hkps://keyserver.ubuntu.com" \
+              "hkps://keys.openpgp.org" \
+              "hkps://pgp.mit.edu"; do
+              args=("$@")
+              for i in "${!args[@]}"; do
+                if [[ "${args[$i]}" == "keyserver.ubuntu.com" ]]; then
+                  args[$i]="$server"
+                fi
+              done
+              if command gpg "${args[@]}"; then
+                return 0
+              fi
+              command gpgconf --kill dirmngr || true
+            done
+            return 1
+          }
+          export -f gpg
           rm -f ./build/linux/sysroot_scripts/keyring.gpg
           GPG_TTY=/dev/null \
             bash ./build/linux/sysroot_scripts/generate_keyring.sh
@@ -613,6 +638,31 @@ jobs:
           chmod +x ./get-clang.sh ./get-sysroot.sh ./build.sh \
             ./build/linux/sysroot_scripts/generate_keyring.sh \
             ./build/linux/sysroot_scripts/sysroot_creator.py
+          export GNUPGHOME="${RUNNER_TEMP}/gnupg"
+          mkdir -p "$GNUPGHOME"
+          chmod 700 "$GNUPGHOME"
+          gpg() {
+            local -a args
+            local server
+            local i
+            for server in \
+              "hkps://keyserver.ubuntu.com" \
+              "hkps://keys.openpgp.org" \
+              "hkps://pgp.mit.edu"; do
+              args=("$@")
+              for i in "${!args[@]}"; do
+                if [[ "${args[$i]}" == "keyserver.ubuntu.com" ]]; then
+                  args[$i]="$server"
+                fi
+              done
+              if command gpg "${args[@]}"; then
+                return 0
+              fi
+              command gpgconf --kill dirmngr || true
+            done
+            return 1
+          }
+          export -f gpg
           rm -f ./build/linux/sysroot_scripts/keyring.gpg
           GPG_TTY=/dev/null \
             bash ./build/linux/sysroot_scripts/generate_keyring.sh
@@ -1249,7 +1299,6 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
-
 
 
 
